@@ -12,7 +12,7 @@ from astrbot_stubs import install_astrbot_stubs
 
 install_astrbot_stubs()
 
-from astrbot_plugin_together_companion.main import TogetherCompanionPlugin
+from astrbot_plugin_together_companion.main import BASE_REALTIME_PROMPT, TogetherCompanionPlugin
 from astrbot_plugin_together_companion.models import RoomSession
 
 
@@ -24,6 +24,18 @@ class TogetherTtsBridgeTests(unittest.IsolatedAsyncioTestCase):
         plugin.send_room_payload = AsyncMock()
         plugin._start_live_mouth_sync = AsyncMock()
         return plugin
+
+    def test_realtime_prompt_delegates_tts_markup_to_postprocessing(self) -> None:
+        self.assertIn("独立处理语种转换和语音合成", BASE_REALTIME_PROMPT)
+        self.assertIn("不要输出 <pc_tts>、<tts>", BASE_REALTIME_PROMPT)
+
+    def test_voice_only_markup_has_clean_visible_fallback(self) -> None:
+        spoken, visible = TogetherCompanionPlugin._split_tts_payload(
+            "<pc_tts>[softly laughing]えへへ、本当に言うこと聞くね。</pc_tts>"
+        )
+
+        self.assertEqual("[softly laughing]えへへ、本当に言うこと聞くね。", spoken)
+        self.assertEqual("えへへ、本当に言うこと聞くね。", visible)
 
     async def test_companion_bridge_audio_is_used_without_direct_provider_call(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
@@ -52,7 +64,12 @@ class TogetherTtsBridgeTests(unittest.IsolatedAsyncioTestCase):
             )
 
             provider.get_audio.assert_not_awaited()
-            api.synthesize_realtime_voice.assert_awaited_once()
+            api.synthesize_realtime_voice.assert_awaited_once_with(
+                "一起看吧。",
+                tts_provider=provider,
+                source="together_companion",
+                play_local=False,
+            )
             audio_payload = next(
                 call.args[1]
                 for call in plugin.send_room_payload.await_args_list
@@ -65,15 +82,104 @@ class TogetherTtsBridgeTests(unittest.IsolatedAsyncioTestCase):
         finally:
             Path(audio_path).unlink(missing_ok=True)
 
-    async def test_conversion_failure_uses_chinese_browser_fallback(self) -> None:
+    async def test_disabled_watch_tts_sends_text_without_synthesis(self) -> None:
+        provider = SimpleNamespace(get_audio=AsyncMock())
+        api = SimpleNamespace(synthesize_realtime_voice=AsyncMock())
+        plugin = self._plugin(provider, api)
+        room = RoomSession("room", "ticket", "watch", "123", None)
+        room.watch_tts_enabled = False
+
+        await plugin._synthesize_and_send(
+            room,
+            "一起看吧。",
+            display_text="一起看吧。",
+            display_source="watch_comment",
+        )
+
+        provider.get_audio.assert_not_awaited()
+        api.synthesize_realtime_voice.assert_not_awaited()
+        self.assertEqual(1, plugin.send_room_payload.await_count)
+        payload = plugin.send_room_payload.await_args.args[1]
+        self.assertEqual("bot_text", payload["type"])
+        self.assertEqual("watch_comment", payload["source"])
+
+    async def test_private_tts_markup_is_split_between_speech_and_display(self) -> None:
+        provider = SimpleNamespace(get_audio=AsyncMock())
+        api = SimpleNamespace(
+            synthesize_realtime_voice=AsyncMock(
+                return_value={
+                    "available": False,
+                    "audio_path": "",
+                    "spoken_text": "うん、分かった。",
+                    "fallback_text": "うん、分かった。",
+                    "language": "ja-JP",
+                }
+            )
+        )
+        plugin = self._plugin(provider, api)
+        room = RoomSession("room", "ticket", "watch", "123", None)
+
+        await plugin._synthesize_and_send(
+            room,
+            "<pc_tts>[soft]うん、分かった。</pc_tts>嗯，知道啦。",
+            display_source="reply",
+        )
+
+        api.synthesize_realtime_voice.assert_awaited_once_with(
+            "[soft]うん、分かった。",
+            tts_provider=provider,
+            source="together_companion",
+            play_local=False,
+        )
+        payload = plugin.send_room_payload.await_args_list[-1].args[1]
+        self.assertEqual("tts_fallback", payload["type"])
+        self.assertEqual("嗯，知道啦。", payload["display_text"])
+        self.assertNotIn("pc_tts", payload["display_text"])
+
+    async def test_disabled_watch_tts_hides_private_markup(self) -> None:
+        provider = SimpleNamespace(get_audio=AsyncMock())
+        api = SimpleNamespace(synthesize_realtime_voice=AsyncMock())
+        plugin = self._plugin(provider, api)
+        room = RoomSession("room", "ticket", "watch", "123", None)
+        room.watch_tts_enabled = False
+
+        await plugin._synthesize_and_send(
+            room,
+            "<pc_tts>[whispering]聞こえてるよ。</pc_tts>一直都听得到哦。",
+            display_source="reply",
+        )
+
+        payload = plugin.send_room_payload.await_args.args[1]
+        self.assertEqual("bot_text", payload["type"])
+        self.assertEqual("一直都听得到哦。", payload["text"])
+        provider.get_audio.assert_not_awaited()
+        api.synthesize_realtime_voice.assert_not_awaited()
+
+    async def test_watch_tts_toggle_updates_room_and_acknowledges(self) -> None:
+        plugin = TogetherCompanionPlugin.__new__(TogetherCompanionPlugin)
+        plugin.send_room_payload = AsyncMock()
+        room = RoomSession("room", "ticket", "watch", "123", None)
+
+        await plugin.handle_room_payload(
+            room,
+            {"type": "set_watch_tts", "enabled": False},
+        )
+
+        self.assertFalse(room.watch_tts_enabled)
+        plugin.send_room_payload.assert_awaited_once_with(
+            room,
+            {"type": "watch_tts", "enabled": False},
+        )
+
+    async def test_conversion_failure_displays_text_without_chinese_speech(self) -> None:
         provider = SimpleNamespace(get_audio=AsyncMock())
         api = SimpleNamespace(
             synthesize_realtime_voice=AsyncMock(
                 return_value={
                     "available": True,
                     "audio_path": "",
-                    "fallback_text": "一起看吧。",
-                    "language": "zh-CN",
+                    "fallback_text": "",
+                    "language": "ja-JP",
                     "reason": "language_conversion_failed",
                 }
             )
@@ -89,23 +195,34 @@ class TogetherTtsBridgeTests(unittest.IsolatedAsyncioTestCase):
         )
 
         provider.get_audio.assert_not_awaited()
-        fallback = plugin.send_room_payload.await_args_list[-1].args[1]
-        self.assertEqual("tts_fallback", fallback["type"])
-        self.assertEqual("zh-CN", fallback["language"])
-        self.assertEqual("一起看吧。", fallback["display_text"])
-        self.assertEqual("watch_comment", fallback["source"])
+        payload = plugin.send_room_payload.await_args_list[-1].args[1]
+        self.assertEqual("bot_text", payload["type"])
+        self.assertEqual("一起看吧。", payload["text"])
+        self.assertEqual("watch_comment", payload["source"])
+        self.assertNotIn(
+            "tts_fallback",
+            [call.args[1].get("type") for call in plugin.send_room_payload.await_args_list],
+        )
 
-    async def test_local_playback_bridge_is_bypassed_to_keep_browser_as_only_output(self) -> None:
+    async def test_local_playback_bridge_is_called_with_local_output_disabled(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
             temp_audio.write(b"audio")
             audio_path = temp_audio.name
-        provider = SimpleNamespace(get_audio=AsyncMock(return_value=audio_path))
+        provider = SimpleNamespace(get_audio=AsyncMock())
         api = SimpleNamespace(
             _plugin=SimpleNamespace(
                 enable_tts_local_playback=True,
                 enable_tts_local_playback_live_only=False,
             ),
-            synthesize_realtime_voice=AsyncMock(),
+            synthesize_realtime_voice=AsyncMock(
+                return_value={
+                    "available": True,
+                    "audio_path": audio_path,
+                    "spoken_text": "エンディングだよ。",
+                    "fallback_text": "エンディングだよ。",
+                    "language": "ja-JP",
+                }
+            ),
         )
         plugin = self._plugin(provider, api)
         room = RoomSession("room", "ticket", "watch", "123", None)
@@ -117,13 +234,103 @@ class TogetherTtsBridgeTests(unittest.IsolatedAsyncioTestCase):
                 display_source="watch_comment",
             )
 
-            api.synthesize_realtime_voice.assert_not_awaited()
-            provider.get_audio.assert_awaited_once_with("片尾到了。")
+            api.synthesize_realtime_voice.assert_awaited_once_with(
+                "片尾到了。",
+                tts_provider=provider,
+                source="together_companion",
+                play_local=False,
+            )
+            provider.get_audio.assert_not_awaited()
             payload_types = [call.args[1].get("type") for call in plugin.send_room_payload.await_args_list]
             self.assertEqual(1, payload_types.count("audio"))
             self.assertNotIn("tts_fallback", payload_types)
         finally:
             Path(audio_path).unlink(missing_ok=True)
+
+    async def test_legacy_bridge_without_play_local_remains_compatible(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
+            temp_audio.write(b"audio")
+            audio_path = temp_audio.name
+
+        class LegacyApi:
+            def __init__(self) -> None:
+                self.calls = []
+
+            async def synthesize_realtime_voice(
+                self,
+                text,
+                *,
+                tts_provider=None,
+                source="external_realtime",
+            ):
+                self.calls.append((text, tts_provider, source))
+                return {
+                    "available": True,
+                    "audio_path": audio_path,
+                    "spoken_text": "一緒に見よう。",
+                    "fallback_text": "一緒に見よう。",
+                    "language": "ja-JP",
+                }
+
+        provider = SimpleNamespace(get_audio=AsyncMock())
+        api = LegacyApi()
+        plugin = self._plugin(provider, api)
+        room = RoomSession("room", "ticket", "watch", "123", None)
+        try:
+            await plugin._synthesize_and_send(
+                room,
+                "一起看吧。",
+                display_text="一起看吧。",
+                display_source="reply",
+            )
+
+            self.assertEqual(
+                [("一起看吧。", provider, "together_companion")],
+                api.calls,
+            )
+            payload_types = [
+                call.args[1].get("type")
+                for call in plugin.send_room_payload.await_args_list
+            ]
+            self.assertIn("audio", payload_types)
+            self.assertNotIn("bot_text", payload_types)
+        finally:
+            Path(audio_path).unlink(missing_ok=True)
+
+    async def test_missing_provider_uses_converted_browser_fallback(self) -> None:
+        api = SimpleNamespace(
+            synthesize_realtime_voice=AsyncMock(
+                return_value={
+                    "available": False,
+                    "audio_path": "",
+                    "spoken_text": "一緒に見よう。",
+                    "fallback_text": "一緒に見よう。",
+                    "language": "ja-JP",
+                    "reason": "tts_provider_unavailable",
+                }
+            )
+        )
+        plugin = self._plugin(None, api)
+        room = RoomSession("room", "ticket", "watch", "123", None)
+
+        await plugin._synthesize_and_send(
+            room,
+            "一起看吧。",
+            display_text="一起看吧。",
+            display_source="reply",
+        )
+
+        api.synthesize_realtime_voice.assert_awaited_once_with(
+            "一起看吧。",
+            tts_provider=None,
+            source="together_companion",
+            play_local=False,
+        )
+        fallback = plugin.send_room_payload.await_args_list[-1].args[1]
+        self.assertEqual("tts_fallback", fallback["type"])
+        self.assertEqual("一緒に見よう。", fallback["text"])
+        self.assertEqual("ja-JP", fallback["language"])
+        self.assertEqual("一起看吧。", fallback["display_text"])
 
     async def test_bootstrap_uses_tts_language_independent_from_stt(self) -> None:
         plugin = TogetherCompanionPlugin.__new__(TogetherCompanionPlugin)

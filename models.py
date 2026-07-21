@@ -97,11 +97,13 @@ class RoomSession:
     vision_error_notified: bool = False
     watch_epoch: int = 0
     watch_ending_epoch: int = -1
+    watch_tts_enabled: bool = True
     shared_experience_task: asyncio.Task | None = None
     shared_experience_finalized: bool = False
     shared_experience_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     integration_closed: bool = False
     generation_task: asyncio.Task | None = None
+    active_utterance_id: str = ""
     resume_token: str = ""
     detach_close_task: asyncio.Task | None = None
     last_activity_notify: float = 0.0

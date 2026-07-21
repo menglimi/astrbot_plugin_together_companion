@@ -53,6 +53,16 @@ class CallProactiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(room.call_active)
         self.assertGreaterEqual(room.call_last_user_activity, before)
 
+    async def test_watch_mode_preserves_connected_voice_state(self) -> None:
+        plugin = TogetherCompanionPlugin.__new__(TogetherCompanionPlugin)
+        room = RoomSession("room", "ticket", "watch", "995051631", None)
+
+        await plugin.handle_room_payload(room, {"type": "call_state", "active": True})
+        await plugin.handle_room_payload(room, {"type": "call_activity"})
+
+        self.assertTrue(room.call_active)
+        self.assertGreater(room.call_last_user_activity, 0)
+
     async def test_camera_frame_is_transient_and_cleared_on_hangup(self) -> None:
         plugin = TogetherCompanionPlugin.__new__(TogetherCompanionPlugin)
         room = RoomSession("room", "ticket", "call", "995051631", None)

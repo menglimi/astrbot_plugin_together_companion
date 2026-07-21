@@ -4,6 +4,11 @@
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => Array.from(document.querySelectorAll(selector));
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const CAMERA_PREVIEW_WIDTH = 1920;
+  const CAMERA_PREVIEW_HEIGHT = 1080;
+  const CAMERA_PREVIEW_FRAME_RATE = 30;
+  const CAMERA_UPLOAD_MAX_WIDTH = 640;
+  const CAMERA_UPLOAD_JPEG_QUALITY = .70;
 
   const state = {
     socket: null,
@@ -21,8 +26,21 @@
     browserRecognitionUnavailable: false,
     sttFallbackPending: false,
     mediaStream: null,
+    talkMode: "free",
+    talkKeyCode: "Space",
+    talkKeyCapturing: false,
+    pushToTalkHeld: false,
+    voiceActivityContext: null,
+    voiceActivityAnalyser: null,
+    voiceActivitySource: null,
+    voiceActivityTimer: 0,
+    voiceActivityLastHeardAt: 0,
+    voiceActivityStartedAt: 0,
+    voiceActivityFrames: 0,
     cameraStream: null,
     cameraEnabled: false,
+    cameraDevices: [],
+    selectedCameraId: "",
     cameraFrameTimer: 0,
     cameraCaptureBusy: false,
     inviteRequestPending: false,
@@ -35,6 +53,7 @@
     currentAudioUrl: "",
     browserUtterance: null,
     draftNode: null,
+    cancellableUtterances: new Map(),
     objectVideoUrl: "",
     videoSourceLabel: "",
     videoQualityLabel: "",
@@ -69,6 +88,7 @@
     reconnectTimer: 0,
     pendingResumeTime: 0,
     videoSeekFeedbackTimer: 0,
+    videoControlsHideTimer: 0,
     videoRateHoldTimer: 0,
     videoRateHoldActive: false,
     videoRateHoldSource: null,
@@ -91,9 +111,16 @@
   function setSettingsOpen(open, restoreFocus = false) {
     const panel = $("#settingsPanel");
     const button = $("#settingsButton");
+    if (!open && state.talkKeyCapturing) {
+      state.talkKeyCapturing = false;
+      updateTalkControls();
+    }
     panel.hidden = !open;
     button.setAttribute("aria-expanded", String(Boolean(open)));
-    if (open) $("#closeSettings").focus();
+    if (open) {
+      refreshCameraDevices(state.cameraStream?.getVideoTracks?.()[0]?.getSettings?.()?.deviceId || "").catch(() => {});
+      $("#closeSettings").focus();
+    }
     else if (restoreFocus) button.focus();
   }
 
@@ -295,6 +322,7 @@
       const wasConnected = state.connected;
       state.connected = false;
       state.inviteRequestPending = false;
+      clearCancellableUtterances();
       $("#inviteButton").disabled = true;
       if (!wasConnected) {
         // 握手失败：resume 凭证可能已失效，清除后回退票据重试
@@ -423,28 +451,42 @@
         break;
       case "user_text":
         clearDraft();
-        addMessage("user", message.text);
+        clearCancellableUtterances();
+        addMessage("user", message.text, "", {
+          utteranceId: message.cancellable ? String(message.utterance_id || "") : "",
+        });
+        break;
+      case "utterance_excluded":
+        removeCancellableUtterance(String(message.id || ""));
+        if (message.excluded) showToast("已排除这条语音，不会进入回复");
+        break;
+      case "watch_tts":
+        $("#watchTtsEnabled").checked = message.enabled !== false;
         break;
       case "bot_delta":
         appendDraft(message.text);
         break;
       case "bot_text":
         clearDraft();
+        clearCancellableUtterances();
+        const visibleBotText = sanitizeBotDisplayText(message.text);
         addMessage(
           "bot",
-          message.text,
+          visibleBotText,
           message.source === "watch_comment" ? "观影" : (message.source === "call_proactive" ? "主动" : ""),
         );
-        showFullscreenSpeech(message.text);
+        showFullscreenSpeech(visibleBotText);
         scheduleCallIdleTimer();
         break;
       case "audio":
         clearDraft();
+        clearCancellableUtterances();
         if (isDuplicateWatchSpeech(message)) break;
         enqueueAudio(message);
         break;
       case "tts_fallback":
         clearDraft();
+        clearCancellableUtterances();
         if (isDuplicateWatchSpeech(message)) break;
         if (state.room?.tts?.browser_fallback) {
           speakInBrowser(message.text, message.language, message.display_text, message.source);
@@ -457,6 +499,7 @@
         break;
       case "stop_audio":
         clearDraft();
+        clearCancellableUtterances();
         stopAudio(false);
         break;
       case "notice":
@@ -464,6 +507,7 @@
         break;
       case "error":
         clearDraft();
+        clearCancellableUtterances();
         setRoomStatus(state.callActive ? "listening" : "idle", state.callActive ? "正在听" : "等待接通");
         showToast(message.message || "房间处理失败", 4500);
         break;
@@ -499,7 +543,12 @@
     astrbotButton.disabled = !room.stt?.server_available;
     astrbotButton.title = room.stt?.server_available ? "使用 AstrBot STT Provider" : "AstrBot 尚未配置 STT Provider";
     $("#autoComment").checked = Boolean(room.watch?.auto_comment);
+    $("#watchTtsEnabled").checked = room.watch?.tts_enabled !== false;
+    loadTalkPreferences();
+    updateTalkControls();
+    loadRememberedCameraDevice();
     updateCameraButton();
+    refreshCameraDevices().catch(() => {});
     setMode(state.mode || room.mode || "call");
     resetSceneMonitor();
   }
@@ -534,7 +583,8 @@
   function setMode(mode, notify = true) {
     const next = mode === "watch" ? "watch" : "call";
     const previous = state.mode;
-    if (previous !== next && next === "watch" && state.callActive) stopCall(false);
+    if (previous !== next) clearCancellableUtterances();
+    if (previous !== next && next === "watch" && state.cameraEnabled) stopCamera(false);
     if (previous !== next && previous === "watch") $("#watchVideo").pause();
     if (previous !== next && state.botSpeaking) stopAudio();
     state.mode = next;
@@ -546,13 +596,53 @@
     updatePlayerState();
   }
 
+  function updateCallButtons() {
+    const connected = state.callActive;
+    const callButton = $("#callToggle");
+    callButton.classList.toggle("active", connected);
+    callButton.title = connected ? "挂断" : "开始通话";
+    callButton.setAttribute("aria-label", callButton.title);
+    callButton.innerHTML = `<i data-lucide="${connected ? "phone-off" : "phone"}"></i>`;
+
+    const watchButton = $("#watchCallToggle");
+    watchButton.classList.toggle("active", connected);
+    watchButton.title = connected ? "挂断语音" : "接通语音";
+    watchButton.setAttribute("aria-label", watchButton.title);
+    watchButton.innerHTML = `<i data-lucide="${connected ? "phone-off" : "phone"}"></i>`;
+  }
+
   function transcriptNodes() {
     return [$("#callTranscript"), $("#watchTranscript")];
   }
 
-  function addMessage(role, text, label = "") {
-    const content = String(text || "").trim();
+  function sanitizeBotDisplayText(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const spoken = [];
+    const withoutBlocks = raw.replace(
+      /<(?:pc[_-]?tts|t{2,}s)\b[^>]*>([\s\S]*?)<\/(?:pc[_-]?tts|t{2,}s)\s*>/gi,
+      (_match, voice) => {
+        if (String(voice || "").trim()) spoken.push(String(voice).trim());
+        return "";
+      },
+    );
+    const visible = withoutBlocks
+      .replace(/<\/?(?:pc[_-]?tts|t{2,}s)\b[^>]*>/gi, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (visible) return visible;
+    return spoken.join(" ")
+      .replace(/\[(?:[a-z][a-z0-9 _-]{0,30})\]/gi, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function addMessage(role, text, label = "", { utteranceId = "" } = {}) {
+    const content = role === "bot"
+      ? sanitizeBotDisplayText(text)
+      : String(text || "").trim();
     if (!content) return;
+    const cancellableItems = [];
     transcriptNodes().forEach((container) => {
       const item = document.createElement("div");
       item.className = `message ${role}`;
@@ -564,10 +654,49 @@
       const span = document.createElement("span");
       span.textContent = content;
       item.appendChild(span);
+      if (utteranceId) {
+        item.classList.add("cancellable-utterance");
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.className = "utterance-cancel";
+        cancel.title = "排除这条识别结果";
+        cancel.setAttribute("aria-label", cancel.title);
+        cancel.innerHTML = '<i data-lucide="x"></i>';
+        cancel.addEventListener("click", () => excludeUtterance(utteranceId));
+        item.appendChild(cancel);
+        cancellableItems.push(item);
+      }
       container.appendChild(item);
       while (container.children.length > 40) container.firstElementChild?.remove();
       container.scrollTop = container.scrollHeight;
     });
+    if (utteranceId) {
+      state.cancellableUtterances.set(utteranceId, cancellableItems);
+      icons();
+    }
+  }
+
+  function removeCancellableUtterance(utteranceId) {
+    const items = state.cancellableUtterances.get(utteranceId) || [];
+    items.forEach((item) => item.remove());
+    state.cancellableUtterances.delete(utteranceId);
+  }
+
+  function clearCancellableUtterances() {
+    state.cancellableUtterances.forEach((items) => {
+      items.forEach((item) => {
+        item.classList.remove("cancellable-utterance");
+        item.querySelector(".utterance-cancel")?.remove();
+      });
+    });
+    state.cancellableUtterances.clear();
+  }
+
+  function excludeUtterance(utteranceId) {
+    if (!utteranceId) return;
+    if (!send({ type: "exclude_utterance", id: utteranceId })) return;
+    removeCancellableUtterance(utteranceId);
+    stopAudio();
   }
 
   function appendDraft(text) {
@@ -606,6 +735,108 @@
     $$("[data-stt-mode]").forEach((button) => button.classList.toggle("active", button.dataset.sttMode === mode));
   }
 
+  function talkKeyName(code) {
+    const names = {
+      Space: "空格",
+      Enter: "回车",
+      Tab: "Tab",
+      Backquote: "`",
+      ShiftLeft: "左 Shift",
+      ShiftRight: "右 Shift",
+      ControlLeft: "左 Ctrl",
+      ControlRight: "右 Ctrl",
+      AltLeft: "左 Alt",
+      AltRight: "右 Alt",
+      CapsLock: "Caps Lock",
+    };
+    if (names[code]) return names[code];
+    if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+    if (/^Digit\d$/.test(code)) return code.slice(5);
+    if (/^Numpad\d$/.test(code)) return `小键盘 ${code.slice(6)}`;
+    return String(code || "Space").replace(/([a-z])([A-Z])/g, "$1 $2");
+  }
+
+  function loadTalkPreferences() {
+    try {
+      const mode = localStorage.getItem("together_talk_mode");
+      const keyCode = localStorage.getItem("together_talk_key");
+      state.talkMode = mode === "push" ? "push" : "free";
+      state.talkKeyCode = keyCode || "Space";
+    } catch {
+      state.talkMode = "free";
+      state.talkKeyCode = "Space";
+    }
+  }
+
+  function saveTalkPreferences() {
+    try {
+      localStorage.setItem("together_talk_mode", state.talkMode);
+      localStorage.setItem("together_talk_key", state.talkKeyCode);
+    } catch { /* 浏览器可能禁用本地存储 */ }
+  }
+
+  function setTalkKey(code) {
+    if (!code) return;
+    state.talkKeyCode = code;
+    state.talkKeyCapturing = false;
+    saveTalkPreferences();
+    updateTalkControls();
+    if (state.callActive && state.talkMode === "push") {
+      setRoomStatus("listening", `等待你按住${talkKeyName(state.talkKeyCode)}`);
+    }
+    showToast(`讲话按键已设为${talkKeyName(state.talkKeyCode)}`);
+  }
+
+  function isTalkKeyBlockedByTarget(target) {
+    const tag = String(target?.tagName || "").toUpperCase();
+    return Boolean(target?.isContentEditable || ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(tag));
+  }
+
+  function updateTalkControls() {
+    const pushMode = state.talkMode === "push";
+    const sttAvailable = resolvedSttMode() !== "none";
+    $$("[data-talk-mode]").forEach((button) => button.classList.toggle("active", button.dataset.talkMode === state.talkMode));
+    $("#talkKeySetting").hidden = !pushMode;
+    $("#talkKeyLabel").textContent = state.talkKeyCapturing ? "请按键" : talkKeyName(state.talkKeyCode);
+    $("#talkKeyCapture").classList.toggle("capturing", state.talkKeyCapturing);
+    const showHold = state.callActive && pushMode && sttAvailable;
+    $("#holdToTalk").hidden = !showHold;
+    $("#holdHint").hidden = !showHold;
+    const keyName = talkKeyName(state.talkKeyCode);
+    $("#holdToTalk").title = `按住${keyName}说话`;
+    $("#holdToTalk").setAttribute("aria-label", `按住${keyName}说话`);
+    $("#holdHint").textContent = `按住${keyName}或麦克风说话`;
+  }
+
+  async function setTalkMode(mode, notify = true) {
+    const next = mode === "push" ? "push" : "free";
+    if (state.talkMode === next) {
+      updateTalkControls();
+      return;
+    }
+    state.talkMode = next;
+    state.talkKeyCapturing = false;
+    state.pushToTalkHeld = false;
+    saveTalkPreferences();
+    window.clearTimeout(state.recognitionRestartTimer);
+    stopRecording(true);
+    stopVoiceActivityDetection();
+    if (state.recognitionRunning && state.recognition) {
+      try { state.recognition.abort(); } catch { /* noop */ }
+    }
+    updateTalkControls();
+    if (!state.callActive) return;
+    const sttMode = resolvedSttMode();
+    if (next === "free") {
+      if (sttMode === "browser") startRecognition();
+      else if (sttMode === "astrbot") await startVoiceActivityDetection();
+      setRoomStatus("listening", "正在听");
+    } else {
+      setRoomStatus("listening", `等待你按住${talkKeyName(state.talkKeyCode)}`);
+    }
+    if (notify) showToast(next === "free" ? "已切换为自由讲话" : "已切换为按键讲话");
+  }
+
   async function startCall() {
     if (!state.connected || state.callActive) return;
     const mode = resolvedSttMode();
@@ -625,18 +856,19 @@
       return;
     }
     state.callActive = true;
+    document.body.classList.add("call-connected");
     send({ type: "call_state", active: true });
-    $("#callToggle").classList.add("active");
-    $("#callToggle").title = "挂断";
-    $("#callToggle").setAttribute("aria-label", "挂断");
-    $("#callToggle").innerHTML = '<i data-lucide="phone-off"></i>';
-    const pushMode = mode === "astrbot";
+    updateCallButtons();
     updateCameraButton();
-    $("#holdToTalk").hidden = !pushMode;
-    $("#holdHint").hidden = !pushMode;
+    updateTalkControls();
     icons();
-    setRoomStatus("listening", pushMode ? "等待你按住麦克风" : (mode === "none" ? "文字通话已接通" : "正在听"));
-    if (mode === "browser") startRecognition();
+    const pushMode = state.talkMode === "push";
+    setRoomStatus(
+      "listening",
+      mode === "none" ? "文字通话已接通" : (pushMode ? `等待你按住${talkKeyName(state.talkKeyCode)}` : "正在听"),
+    );
+    if (mode === "browser" && !pushMode) startRecognition();
+    if (mode === "astrbot" && !pushMode) await startVoiceActivityDetection();
     if (mode === "none") showToast("语音识别不可用，仍可使用文字和摄像头通话", 4200);
     scheduleCallIdleTimer();
   }
@@ -644,6 +876,8 @@
   function stopCall(notify = true) {
     const wasActive = state.callActive;
     state.callActive = false;
+    clearCancellableUtterances();
+    document.body.classList.remove("call-connected");
     clearCallIdleTimer();
     window.clearTimeout(state.recognitionRestartTimer);
     if (state.recognition) {
@@ -651,17 +885,14 @@
     }
     state.recognition = null;
     state.recognitionRunning = false;
+    state.pushToTalkHeld = false;
+    stopVoiceActivityDetection();
     stopRecording(true);
     if (state.mediaStream) state.mediaStream.getTracks().forEach((track) => track.stop());
     state.mediaStream = null;
     stopCamera(false);
-    const button = $("#callToggle");
-    button.classList.remove("active");
-    button.title = "开始通话";
-    button.setAttribute("aria-label", "开始通话");
-    button.innerHTML = '<i data-lucide="phone"></i>';
-    $("#holdToTalk").hidden = true;
-    $("#holdHint").hidden = true;
+    updateCallButtons();
+    updateTalkControls();
     updateCameraButton();
     setRoomStatus("idle", "等待接通");
     if (wasActive && state.connected) send({ type: "call_state", active: false });
@@ -683,6 +914,72 @@
     return error?.message || "无法开启摄像头";
   }
 
+  function rememberCameraDevice(deviceId) {
+    state.selectedCameraId = String(deviceId || "");
+    try {
+      if (state.selectedCameraId) localStorage.setItem("together_camera_device", state.selectedCameraId);
+      else localStorage.removeItem("together_camera_device");
+    } catch { /* 浏览器可能禁用本地存储 */ }
+  }
+
+  function loadRememberedCameraDevice() {
+    if (state.selectedCameraId) return;
+    try { state.selectedCameraId = localStorage.getItem("together_camera_device") || ""; }
+    catch { state.selectedCameraId = ""; }
+  }
+
+  function cameraDeviceName(device, index = 0) {
+    return String(device?.label || "").trim() || `摄像头 ${index + 1}`;
+  }
+
+  async function refreshCameraDevices(currentDeviceId = "") {
+    const select = $("#cameraDeviceSelect");
+    const hint = $("#cameraDeviceHint");
+    const available = Boolean(state.room?.call?.camera_available);
+    if (!navigator.mediaDevices?.enumerateDevices) {
+      state.cameraDevices = [];
+      select.disabled = true;
+      hint.textContent = "当前浏览器不支持选择摄像头";
+      return [];
+    }
+    try {
+      const devices = (await navigator.mediaDevices.enumerateDevices())
+        .filter((item) => item.kind === "videoinput" && item.deviceId);
+      state.cameraDevices = devices;
+      if (state.selectedCameraId && !devices.some((item) => item.deviceId === state.selectedCameraId)) {
+        rememberCameraDevice("");
+      }
+      const options = [new Option("自动选择", "")];
+      devices.forEach((device, index) => options.push(new Option(cameraDeviceName(device, index), device.deviceId)));
+      select.replaceChildren(...options);
+      select.value = devices.some((item) => item.deviceId === state.selectedCameraId)
+        ? state.selectedCameraId
+        : "";
+      select.disabled = !available || devices.length === 0;
+      const labelsVisible = devices.some((item) => String(item.label || "").trim());
+      const currentIndex = devices.findIndex((item) => item.deviceId === currentDeviceId);
+      const currentDevice = currentIndex >= 0 ? devices[currentIndex] : null;
+      const currentSettings = state.cameraStream?.getVideoTracks?.()[0]?.getSettings?.() || {};
+      const currentWidth = Number(currentSettings.width) || 0;
+      const currentHeight = Number(currentSettings.height) || 0;
+      const resolutionLabel = currentWidth && currentHeight ? ` · ${currentWidth}×${currentHeight}` : "";
+      hint.textContent = !available
+        ? "需要先配置支持图片输入的模型"
+        : (devices.length === 0
+          ? "没有检测到摄像头"
+          : (currentDevice
+            ? `当前使用：${cameraDeviceName(currentDevice, currentIndex)}${resolutionLabel}`
+            : (labelsVisible ? `已检测到 ${devices.length} 台摄像头` : "开启一次摄像头授权后会显示设备名称")));
+      $("#switchCamera").hidden = !state.cameraEnabled || devices.length < 2;
+      return devices;
+    } catch {
+      state.cameraDevices = [];
+      select.disabled = true;
+      hint.textContent = "暂时无法读取摄像头列表";
+      return [];
+    }
+  }
+
   function updateCameraButton() {
     const button = $("#cameraToggle");
     const available = Boolean(state.room?.call?.camera_available);
@@ -696,43 +993,99 @@
     icons();
   }
 
-  async function replaceCameraStream(videoConstraints = { facingMode: { ideal: "user" } }) {
+  function cameraLooksRear(value) {
+    const text = String(value || "").toLowerCase();
+    return /environment|rear|back|后置|后摄|背面/.test(text);
+  }
+
+  async function replaceCameraStream(
+    videoConstraints = { facingMode: { ideal: "user" } },
+    { releaseCurrent = false, mirror = true } = {},
+  ) {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("当前环境不支持摄像头访问");
+    const video = $("#callCamera");
+    const previous = state.cameraStream;
+    if (releaseCurrent && previous) {
+      previous.getTracks().forEach((track) => track.stop());
+      state.cameraStream = null;
+      video.srcObject = null;
+      // 部分手机在 track.stop() 后仍需一个短暂事件循环才能释放摄像头硬件。
+      await new Promise((resolve) => window.setTimeout(resolve, 180));
+    }
     const nextStream = await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: {
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
+        width: { ideal: CAMERA_PREVIEW_WIDTH },
+        height: { ideal: CAMERA_PREVIEW_HEIGHT },
+        frameRate: { ideal: CAMERA_PREVIEW_FRAME_RATE, max: CAMERA_PREVIEW_FRAME_RATE },
         ...videoConstraints,
       },
     });
-    const video = $("#callCamera");
-    const previous = state.cameraStream;
-    video.srcObject = nextStream;
-    await video.play();
+    try {
+      video.srcObject = nextStream;
+      await video.play();
+    } catch (error) {
+      nextStream.getTracks().forEach((track) => track.stop());
+      video.srcObject = null;
+      throw error;
+    }
     state.cameraStream = nextStream;
     state.cameraEnabled = true;
-    previous?.getTracks().forEach((track) => track.stop());
+    document.body.classList.add("call-camera-on");
+    if (!releaseCurrent) previous?.getTracks().forEach((track) => track.stop());
     const settings = nextStream.getVideoTracks()[0]?.getSettings?.() || {};
-    $("#cameraStage").classList.toggle("rear-camera", settings.facingMode === "environment");
+    $("#cameraStage").classList.toggle(
+      "rear-camera",
+      !mirror || cameraLooksRear(settings.facingMode),
+    );
     $("#avatarStage").hidden = true;
     $("#cameraStage").hidden = false;
-    const devices = await navigator.mediaDevices.enumerateDevices?.() || [];
-    $("#switchCamera").hidden = devices.filter((item) => item.kind === "videoinput").length < 2;
+    await refreshCameraDevices(settings.deviceId || "");
     updateCameraButton();
   }
 
-  async function startCamera() {
+  async function startCamera({ silent = false } = {}) {
     if (!state.callActive || state.cameraEnabled) return;
     try {
-      await replaceCameraStream();
+      loadRememberedCameraDevice();
+      let openedPreferred = false;
+      if (state.selectedCameraId) {
+        const devices = await refreshCameraDevices();
+        const preferred = devices.find((item) => item.deviceId === state.selectedCameraId);
+        if (preferred) {
+          try {
+            await replaceCameraStream(
+              { deviceId: { exact: preferred.deviceId } },
+              { mirror: !cameraLooksRear(preferred.label) },
+            );
+            openedPreferred = true;
+          } catch (error) {
+            if (!["OverconstrainedError", "ConstraintNotSatisfiedError", "NotFoundError", "NotReadableError"].includes(error?.name)) {
+              throw error;
+            }
+            rememberCameraDevice("");
+          }
+        }
+      }
+      if (!openedPreferred) {
+        try {
+          await replaceCameraStream({ facingMode: { exact: "user" } }, { mirror: true });
+        } catch (error) {
+          if (!["OverconstrainedError", "ConstraintNotSatisfiedError", "NotFoundError"].includes(error?.name)) {
+            throw error;
+          }
+          await replaceCameraStream({ facingMode: { ideal: "user" } }, { mirror: true });
+        }
+      }
       window.clearInterval(state.cameraFrameTimer);
       state.cameraFrameTimer = window.setInterval(sendCameraFrame, 8000);
       window.setTimeout(sendCameraFrame, 600);
-      showToast("摄像头已开启");
+      if (!silent) showToast("摄像头已开启");
+      return true;
     } catch (error) {
       showToast(cameraErrorMessage(error), 4800);
       stopCamera(false);
+      return false;
     }
   }
 
@@ -743,6 +1096,7 @@
     state.cameraStream?.getTracks().forEach((track) => track.stop());
     state.cameraStream = null;
     state.cameraEnabled = false;
+    document.body.classList.remove("call-camera-on");
     const video = $("#callCamera");
     if (video) video.srcObject = null;
     $("#cameraStage").hidden = true;
@@ -760,19 +1114,104 @@
     else await startCamera();
   }
 
+  async function switchToCameraDevice(device) {
+    if (!state.cameraEnabled || !device?.deviceId) return false;
+    const button = $("#switchCamera");
+    const select = $("#cameraDeviceSelect");
+    button.disabled = true;
+    select.disabled = true;
+    const currentStream = state.cameraStream;
+    const currentTrack = currentStream?.getVideoTracks()[0];
+    const currentSettings = currentTrack?.getSettings?.() || {};
+    const currentId = currentSettings.deviceId || "";
+    const currentMirror = !$("#cameraStage").classList.contains("rear-camera");
+    const previousPreference = state.selectedCameraId;
+    if (device.deviceId === currentId) {
+      rememberCameraDevice(device.deviceId);
+      await refreshCameraDevices(currentId);
+      button.disabled = false;
+      return true;
+    }
+    let restored = false;
+    try {
+      showToast("正在切换摄像头");
+      await replaceCameraStream(
+        { deviceId: { exact: device.deviceId } },
+        { releaseCurrent: true, mirror: !cameraLooksRear(device.label) },
+      );
+      rememberCameraDevice(device.deviceId);
+      await refreshCameraDevices(device.deviceId);
+      await sendCameraFrame();
+      const index = state.cameraDevices.findIndex((item) => item.deviceId === device.deviceId);
+      showToast(`已切换到${cameraDeviceName(device, Math.max(0, index))}`);
+      return true;
+    } catch (error) {
+      const restoreConstraints = currentId
+        ? { deviceId: { exact: currentId } }
+        : { facingMode: { ideal: currentSettings.facingMode || "user" } };
+      if (state.cameraStream === currentStream && currentTrack?.readyState !== "ended") {
+        restored = true;
+      } else {
+        try {
+          await replaceCameraStream(
+            restoreConstraints,
+            { releaseCurrent: Boolean(state.cameraStream), mirror: currentMirror },
+          );
+          restored = true;
+        } catch {
+          stopCamera(false);
+        }
+      }
+      rememberCameraDevice(previousPreference);
+      await refreshCameraDevices(restored ? currentId : "");
+      showToast(
+        restored ? `切换失败，已恢复原摄像头：${cameraErrorMessage(error)}` : `切换失败，请重新开启摄像头：${cameraErrorMessage(error)}`,
+        5200,
+      );
+      return false;
+    } finally {
+      button.disabled = !state.cameraEnabled;
+      select.disabled = !state.room?.call?.camera_available || state.cameraDevices.length === 0;
+    }
+  }
+
   async function switchCamera() {
     if (!state.cameraEnabled || !navigator.mediaDevices?.enumerateDevices) return;
-    try {
-      const devices = (await navigator.mediaDevices.enumerateDevices()).filter((item) => item.kind === "videoinput");
-      const currentId = state.cameraStream?.getVideoTracks()[0]?.getSettings?.().deviceId || "";
-      const currentIndex = Math.max(0, devices.findIndex((item) => item.deviceId === currentId));
-      const next = devices[(currentIndex + 1) % devices.length];
-      if (!next || next.deviceId === currentId) { showToast("没有其他可切换的摄像头"); return; }
-      await replaceCameraStream({ deviceId: { exact: next.deviceId } });
-      await sendCameraFrame();
-    } catch (error) {
-      showToast(cameraErrorMessage(error), 4200);
+    const devices = await refreshCameraDevices(
+      state.cameraStream?.getVideoTracks?.()[0]?.getSettings?.()?.deviceId || "",
+    );
+    const currentId = state.cameraStream?.getVideoTracks?.()[0]?.getSettings?.()?.deviceId || "";
+    const currentIndex = Math.max(0, devices.findIndex((item) => item.deviceId === currentId));
+    const next = devices[(currentIndex + 1) % devices.length];
+    if (!next || next.deviceId === currentId) {
+      showToast("没有其他可切换的摄像头");
+      return;
     }
+    await switchToCameraDevice(next);
+  }
+
+  async function selectCameraDevice(deviceId) {
+    const selectedId = String(deviceId || "");
+    if (!state.cameraEnabled) {
+      rememberCameraDevice(selectedId);
+      await refreshCameraDevices();
+      showToast(selectedId ? "下次开启镜头时使用所选摄像头" : "已设为自动选择摄像头");
+      return;
+    }
+    if (!selectedId) {
+      rememberCameraDevice("");
+      stopCamera(false);
+      if (await startCamera({ silent: true })) showToast("已切换为自动选择摄像头");
+      return;
+    }
+    const devices = state.cameraDevices.length ? state.cameraDevices : await refreshCameraDevices();
+    const device = devices.find((item) => item.deviceId === selectedId);
+    if (!device) {
+      showToast("所选摄像头已经不可用");
+      await refreshCameraDevices();
+      return;
+    }
+    await switchToCameraDevice(device);
   }
 
   function createRecognition() {
@@ -849,10 +1288,18 @@
           return;
         }
         state.mediaStream = stream;
-        $("#holdToTalk").hidden = false;
-        $("#holdHint").hidden = false;
-        setRoomStatus("listening", "等待你按住麦克风");
-        showToast("浏览器语音识别不可用，已切换到按住说话", 4600);
+        updateTalkControls();
+        if (state.talkMode === "free") await startVoiceActivityDetection();
+        setRoomStatus(
+          "listening",
+          state.talkMode === "push" ? `等待你按住${talkKeyName(state.talkKeyCode)}` : "正在听",
+        );
+        showToast(
+          state.talkMode === "push"
+            ? "浏览器语音识别不可用，已切换到 AstrBot 按键讲话"
+            : "浏览器语音识别不可用，已切换到 AstrBot 自由讲话",
+          4600,
+        );
         icons();
         state.sttFallbackPending = false;
         return;
@@ -868,8 +1315,7 @@
         4800,
       );
     }
-    $("#holdToTalk").hidden = true;
-    $("#holdHint").hidden = true;
+    updateTalkControls();
     setRoomStatus("listening", "文字通话已接通");
     updateCameraButton();
     state.sttFallbackPending = false;
@@ -887,6 +1333,7 @@
   function scheduleRecognitionRestart() {
     window.clearTimeout(state.recognitionRestartTimer);
     if (!state.callActive || state.botSpeaking || resolvedSttMode() !== "browser") return;
+    if (state.talkMode === "push" && !state.pushToTalkHeld) return;
     const delay = Math.min(5000, 280 * (2 ** state.recognitionFailCount));
     state.recognitionRestartTimer = window.setTimeout(startRecognition, delay);
   }
@@ -916,7 +1363,10 @@
       const video = $("#watchVideo");
       setRoomStatus("watching", video.ended ? "已经看完" : (video.paused ? "已经暂停" : "一起看着"));
     } else {
-      setRoomStatus(state.callActive ? "listening" : "idle", state.callActive ? "正在听" : "等待接通");
+      const statusText = state.callActive
+        ? (state.talkMode === "push" ? `等待你按住${talkKeyName(state.talkKeyCode)}` : "正在听")
+        : "等待接通";
+      setRoomStatus(state.callActive ? "listening" : "idle", statusText);
     }
     scheduleRecognitionRestart();
     scheduleCallIdleTimer();
@@ -950,6 +1400,103 @@
     animateVideoVolume(target, 240);
   }
 
+  function stopVoiceActivityDetection() {
+    window.clearInterval(state.voiceActivityTimer);
+    state.voiceActivityTimer = 0;
+    try { state.voiceActivitySource?.disconnect(); } catch { /* noop */ }
+    try { state.voiceActivityAnalyser?.disconnect(); } catch { /* noop */ }
+    const context = state.voiceActivityContext;
+    state.voiceActivitySource = null;
+    state.voiceActivityAnalyser = null;
+    state.voiceActivityContext = null;
+    state.voiceActivityLastHeardAt = 0;
+    state.voiceActivityStartedAt = 0;
+    state.voiceActivityFrames = 0;
+    if (context && context.state !== "closed") context.close().catch(() => {});
+  }
+
+  async function startVoiceActivityDetection() {
+    stopVoiceActivityDetection();
+    if (!state.callActive || state.talkMode !== "free" || resolvedSttMode() !== "astrbot") return false;
+    if (!state.mediaStream) {
+      try { state.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+      catch (error) { showToast(error?.message || "无法使用麦克风"); return false; }
+    }
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) {
+      state.talkMode = "push";
+      saveTalkPreferences();
+      updateTalkControls();
+      setRoomStatus("listening", `等待你按住${talkKeyName(state.talkKeyCode)}`);
+      showToast("当前浏览器不支持自动分段，已切换为按键讲话", 4600);
+      return false;
+    }
+    try {
+      const context = new AudioContextClass();
+      const analyser = context.createAnalyser();
+      const source = context.createMediaStreamSource(state.mediaStream);
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = .45;
+      source.connect(analyser);
+      if (context.state === "suspended") await context.resume();
+      state.voiceActivityContext = context;
+      state.voiceActivityAnalyser = analyser;
+      state.voiceActivitySource = source;
+      const samples = new Uint8Array(analyser.fftSize);
+      let noiseFloor = .012;
+      state.voiceActivityTimer = window.setInterval(() => {
+        if (!state.callActive || state.talkMode !== "free" || resolvedSttMode() !== "astrbot") {
+          stopVoiceActivityDetection();
+          return;
+        }
+        if (state.botSpeaking) {
+          state.voiceActivityFrames = 0;
+          if (state.recording) stopRecording(true);
+          return;
+        }
+        analyser.getByteTimeDomainData(samples);
+        let energy = 0;
+        for (const sample of samples) {
+          const normalized = (sample - 128) / 128;
+          energy += normalized * normalized;
+        }
+        const level = Math.sqrt(energy / samples.length);
+        if (!state.recording) noiseFloor = (noiseFloor * .96) + (Math.min(level, .04) * .04);
+        const threshold = Math.max(.028, noiseFloor * 2.4);
+        const now = Date.now();
+        if (level >= threshold) {
+          state.voiceActivityFrames += 1;
+          state.voiceActivityLastHeardAt = now;
+          if (!state.recording && state.voiceActivityFrames >= 2) {
+            state.voiceActivityStartedAt = now;
+            startRecording();
+          }
+        } else {
+          state.voiceActivityFrames = 0;
+        }
+        if (
+          state.recording
+          && (
+            (state.voiceActivityLastHeardAt && now - state.voiceActivityLastHeardAt >= 900)
+            || (state.voiceActivityStartedAt && now - state.voiceActivityStartedAt >= 28000)
+          )
+        ) {
+          stopRecording();
+          state.voiceActivityStartedAt = 0;
+        }
+      }, 80);
+      return true;
+    } catch (error) {
+      stopVoiceActivityDetection();
+      state.talkMode = "push";
+      saveTalkPreferences();
+      updateTalkControls();
+      setRoomStatus("listening", `等待你按住${talkKeyName(state.talkKeyCode)}`);
+      showToast(`${error?.message || "无法启动自由讲话检测"}，已切换为按键讲话`, 4600);
+      return false;
+    }
+  }
+
   async function startRecording() {
     if (!state.callActive || state.recording || resolvedSttMode() !== "astrbot") return;
     noteCallActivity();
@@ -966,6 +1513,12 @@
       recorder.addEventListener("stop", async () => {
         state.recording = false;
         $("#holdToTalk").classList.remove("recording");
+        if (state.callActive && !state.botSpeaking) {
+          setRoomStatus(
+            "listening",
+            state.talkMode === "push" ? `等待你按住${talkKeyName(state.talkKeyCode)}` : "正在听",
+          );
+        }
         if (recorder.__discard) return;
         if (!chunks.length) return;
         const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
@@ -973,7 +1526,13 @@
         if (blob.size > 10 * 1024 * 1024) { showToast("这段语音太长，请分开说"); return; }
         const data = await blobToBase64(blob);
         const frame = await captureCameraFrameData();
-        send({ type: "audio_utterance", mime: blob.type || "audio/webm", data, frame });
+        send({
+          type: "audio_utterance",
+          utterance_id: newUtteranceId(),
+          mime: blob.type || "audio/webm",
+          data,
+          frame,
+        });
       });
       state.recorder = recorder;
       state.recording = true;
@@ -996,6 +1555,40 @@
     state.recorder = null;
   }
 
+  function beginPushToTalk() {
+    if (!state.callActive || state.talkMode !== "push" || state.pushToTalkHeld || resolvedSttMode() === "none") return;
+    state.pushToTalkHeld = true;
+    noteCallActivity();
+    if (state.botSpeaking) {
+      send({ type: "interrupt" });
+      stopAudio();
+    }
+    $("#holdToTalk").classList.add("recording");
+    setRoomStatus("listening", "正在听你说");
+    if (resolvedSttMode() === "browser") startRecognition();
+    else startRecording();
+  }
+
+  function endPushToTalk(discard = false) {
+    if (!state.pushToTalkHeld && !state.recording) return;
+    state.pushToTalkHeld = false;
+    window.clearTimeout(state.recognitionRestartTimer);
+    $("#holdToTalk").classList.remove("recording");
+    if (resolvedSttMode() === "browser") {
+      if (state.recognition) {
+        try {
+          if (discard) state.recognition.abort();
+          else state.recognition.stop();
+        } catch { /* noop */ }
+      }
+    } else {
+      stopRecording(discard);
+    }
+    if (state.callActive && !state.botSpeaking) {
+      setRoomStatus("listening", `等待你按住${talkKeyName(state.talkKeyCode)}`);
+    }
+  }
+
   async function blobToBase64(blob) {
     const bytes = new Uint8Array(await blob.arrayBuffer());
     let binary = "";
@@ -1008,21 +1601,37 @@
 
   async function sendUserText(text, source = "text", alternatives = []) {
     const value = String(text || "").trim();
-    if (!value) return;
+    if (!value) return false;
     const frame = state.mode === "watch"
       ? await captureFrameData(720, .76)
       : (state.mode === "call" ? await captureCameraFrameData() : "");
     if (state.botSpeaking) stopAudio();
     noteCallActivity();
-    if (send({ type: "user_text", text: value, source, alternatives, state: playerState(), frame })) {
+    const utteranceId = source === "browser_stt" ? newUtteranceId() : "";
+    const sent = send({
+      type: "user_text",
+      text: value,
+      source,
+      alternatives,
+      utterance_id: utteranceId,
+      state: playerState(),
+      frame,
+    });
+    if (sent) {
       $("#messageInput").value = "";
     }
+    return sent;
+  }
+
+  function newUtteranceId() {
+    if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
   }
 
   function revealSpeechMessage(message) {
     if (!message || message.revealed) return;
     message.revealed = true;
-    const visible = String(message.display_text || message.text || "").trim();
+    const visible = sanitizeBotDisplayText(message.display_text || message.text);
     if (!visible) return;
     addMessage("bot", visible, message.source === "watch_comment" ? "观影" : "");
     showFullscreenSpeech(visible);
@@ -1030,7 +1639,7 @@
 
   function isDuplicateWatchSpeech(message) {
     if (message?.source !== "watch_comment") return false;
-    const text = String(message.display_text || message.text || "").trim();
+    const text = sanitizeBotDisplayText(message.display_text || message.text);
     if (!text) return false;
     const now = Date.now();
     const duplicate = state.lastWatchSpeechText === text && now - state.lastWatchSpeechAt < 12000;
@@ -1239,6 +1848,33 @@
       $(`#${id}`).disabled = !hasSource;
     });
     $("#videoCenterToggle").disabled = !hasSource;
+    if (!playing) showVideoControls({ autoHide: false });
+  }
+
+  function videoControlsHaveFocus() {
+    const active = document.activeElement;
+    return Boolean(
+      active
+      && ($("#videoControls").contains(active) || active === $("#toggleFullscreen"))
+    );
+  }
+
+  function hideVideoControls() {
+    window.clearTimeout(state.videoControlsHideTimer);
+    state.videoControlsHideTimer = 0;
+    const video = $("#watchVideo");
+    if (video.paused || video.ended || state.videoRateHoldActive || videoControlsHaveFocus()) return;
+    $("#videoStage").classList.add("controls-hidden");
+  }
+
+  function showVideoControls({ autoHide = true } = {}) {
+    window.clearTimeout(state.videoControlsHideTimer);
+    state.videoControlsHideTimer = 0;
+    $("#videoStage").classList.remove("controls-hidden");
+    const video = $("#watchVideo");
+    if (autoHide && !video.paused && !video.ended) {
+      state.videoControlsHideTimer = window.setTimeout(hideVideoControls, 2200);
+    }
   }
 
   async function toggleVideoPlayback() {
@@ -1290,9 +1926,9 @@
     state.videoRateHoldActive = true;
     state.videoRateHoldSource = source;
     state.videoRateBeforeHold = video.playbackRate || 1;
-    video.playbackRate = 3;
+    video.playbackRate = 2;
     source?.classList?.add("holding");
-    showVideoSeekFeedback("3x", "rate", 0);
+    showVideoSeekFeedback("2x", "rate", 0);
     return true;
   }
 
@@ -1313,6 +1949,7 @@
     state.videoRateHoldSource = null;
     hideVideoSeekFeedback();
     updateVideoControls();
+    showVideoControls();
     return true;
   }
 
@@ -1465,7 +2102,11 @@
 
   async function captureCameraFrameData() {
     if (!state.cameraEnabled || !state.cameraStream) return "";
-    return captureVideoFrameData($("#callCamera"), 640, .70);
+    return captureVideoFrameData(
+      $("#callCamera"),
+      CAMERA_UPLOAD_MAX_WIDTH,
+      CAMERA_UPLOAD_JPEG_QUALITY,
+    );
   }
 
   async function sendCameraFrame() {
@@ -1538,9 +2179,31 @@
       setActiveSttButton(state.sttMode);
       if (wasActive) startCall();
     }));
+    $$("[data-talk-mode]").forEach((button) => button.addEventListener("click", () => {
+      setTalkMode(button.dataset.talkMode).catch((error) => showToast(error?.message || "无法切换讲话方式"));
+    }));
+    $("#talkKeyCapture").addEventListener("click", () => {
+      state.talkKeyCapturing = !state.talkKeyCapturing;
+      updateTalkControls();
+    });
     $("#callToggle").addEventListener("click", () => state.callActive ? stopCall(true) : startCall());
+    $("#watchCallToggle").addEventListener("click", () => state.callActive ? stopCall(true) : startCall());
+    $("#watchTtsEnabled").addEventListener("change", (event) => {
+      const enabled = Boolean(event.target.checked);
+      if (!send({ type: "set_watch_tts", enabled })) {
+        event.target.checked = !enabled;
+        return;
+      }
+      showToast(enabled ? "后续观影回复将播放语音" : "后续观影回复仅显示文字");
+    });
     $("#cameraToggle").addEventListener("click", toggleCamera);
     $("#switchCamera").addEventListener("click", switchCamera);
+    $("#cameraDeviceSelect").addEventListener("change", (event) => {
+      selectCameraDevice(event.target.value).catch((error) => showToast(cameraErrorMessage(error), 4800));
+    });
+    navigator.mediaDevices?.addEventListener?.("devicechange", () => {
+      refreshCameraDevices(state.cameraStream?.getVideoTracks?.()[0]?.getSettings?.()?.deviceId || "").catch(() => {});
+    });
     $("#interruptButton").addEventListener("click", () => { send({ type: "interrupt" }); stopAudio(); });
     $("#toggleFullscreen").addEventListener("click", toggleWatchFullscreen);
     const onFullscreenChange = () => {
@@ -1550,20 +2213,46 @@
     document.addEventListener("fullscreenchange", onFullscreenChange);
     document.addEventListener("webkitfullscreenchange", onFullscreenChange);
     window.addEventListener("keydown", (event) => {
+      if (state.talkKeyCapturing) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (event.code === "Escape") {
+          state.talkKeyCapturing = false;
+          updateTalkControls();
+        } else if (!event.repeat) {
+          setTalkKey(event.code);
+        }
+        return;
+      }
+      if (
+        state.talkMode !== "push"
+        || event.code !== state.talkKeyCode
+        || event.repeat
+        || isTalkKeyBlockedByTarget(event.target)
+      ) return;
+      event.preventDefault();
+      beginPushToTalk();
+    });
+    window.addEventListener("keyup", (event) => {
+      if (state.talkMode !== "push" || event.code !== state.talkKeyCode || !state.pushToTalkHeld) return;
+      event.preventDefault();
+      endPushToTalk();
+    });
+    window.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
       if (!$("#settingsPanel").hidden) setSettingsOpen(false, true);
       else if (state.pseudoFullscreen) setPseudoFullscreen(false);
     });
 
     const hold = $("#holdToTalk");
-    hold.addEventListener("pointerdown", (event) => { event.preventDefault(); hold.setPointerCapture?.(event.pointerId); startRecording(); });
-    hold.addEventListener("pointerup", (event) => { event.preventDefault(); stopRecording(); });
-    hold.addEventListener("pointercancel", () => stopRecording(true));
+    hold.addEventListener("pointerdown", (event) => { event.preventDefault(); hold.setPointerCapture?.(event.pointerId); beginPushToTalk(); });
+    hold.addEventListener("pointerup", (event) => { event.preventDefault(); endPushToTalk(); });
+    hold.addEventListener("pointercancel", () => endPushToTalk(true));
     hold.addEventListener("keydown", (event) => {
-      if ([" ", "Enter"].includes(event.key) && !event.repeat) { event.preventDefault(); startRecording(); }
+      if ([" ", "Enter"].includes(event.key) && !event.repeat) { event.preventDefault(); beginPushToTalk(); }
     });
     hold.addEventListener("keyup", (event) => {
-      if ([" ", "Enter"].includes(event.key)) { event.preventDefault(); stopRecording(); }
+      if ([" ", "Enter"].includes(event.key)) { event.preventDefault(); endPushToTalk(); }
     });
 
     $("#messageForm").addEventListener("submit", (event) => { event.preventDefault(); sendUserText($("#messageInput").value); });
@@ -1597,6 +2286,15 @@
     });
 
     const video = $("#watchVideo");
+    const videoStage = $("#videoStage");
+    const videoControls = $("#videoControls");
+    videoStage.addEventListener("pointermove", () => showVideoControls());
+    videoStage.addEventListener("pointerdown", () => showVideoControls());
+    videoStage.addEventListener("pointerleave", hideVideoControls);
+    videoControls.addEventListener("pointerenter", () => showVideoControls({ autoHide: false }));
+    videoControls.addEventListener("pointerleave", () => showVideoControls());
+    videoControls.addEventListener("focusin", () => showVideoControls({ autoHide: false }));
+    videoControls.addEventListener("focusout", () => window.setTimeout(() => showVideoControls(), 0));
     $("#videoPlayPause").addEventListener("click", toggleVideoPlayback);
     $("#videoCenterToggle").addEventListener("click", toggleVideoPlayback);
     $("#videoSeekBack").addEventListener("click", () => seekVideoBy(-10));
@@ -1721,6 +2419,7 @@
         if (name !== "timeupdate" || now - state.lastPlayerStateSentAt >= 2000) updatePlayerState(name);
         updateVideoControls();
         if (name === "play") {
+          showVideoControls();
           state.lastFrameSentAt = now;
           if (!state.openingSent && video.currentTime < 12) {
             state.openingSent = true;
@@ -1731,19 +2430,31 @@
           }
         }
         if (name === "seeked") state.lastSceneSignature = null;
-        if (name === "pause" || name === "ended") endTemporaryVideoRate();
+        if (name === "pause" || name === "ended") {
+          endTemporaryVideoRate();
+          showVideoControls({ autoHide: false });
+        }
         if (name === "ended") {
           if ($("#autoComment").checked) captureAndSendFrame("ending");
         }
       });
     });
-    window.addEventListener("blur", endTemporaryVideoRate);
+    window.addEventListener("blur", () => {
+      endTemporaryVideoRate();
+      if (state.pushToTalkHeld) endPushToTalk(true);
+      if (state.talkKeyCapturing) {
+        state.talkKeyCapturing = false;
+        updateTalkControls();
+      }
+    });
     window.addEventListener("beforeunload", () => {
+      clearCancellableUtterances();
       stopCall(false);
       stopAudio();
       window.clearInterval(state.frameTimer);
       window.clearInterval(state.pingTimer);
       window.clearTimeout(state.openingTimer);
+      window.clearTimeout(state.videoControlsHideTimer);
       window.cancelAnimationFrame(state.volumeAnimationFrame);
       if (state.objectVideoUrl) URL.revokeObjectURL(state.objectVideoUrl);
       if (state.socket?.readyState === WebSocket.OPEN) state.socket.close();

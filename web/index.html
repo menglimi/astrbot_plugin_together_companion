@@ -7,7 +7,7 @@
   <title>我会和你在一起</title>
   <link rel="stylesheet" href="/assets/app.css" />
 </head>
-<body>
+<body data-mode="call">
   <header class="topbar">
     <div class="brand">
       <img id="brandAvatar" src="/avatar" alt="Bot 头像" />
@@ -26,7 +26,7 @@
       <button id="inviteButton" class="icon-button" type="button" title="生成邀请链接" aria-label="生成邀请链接" disabled>
         <i data-lucide="user-plus"></i>
       </button>
-      <button id="settingsButton" class="icon-button" type="button" title="语音设置" aria-label="语音设置" aria-expanded="false" aria-controls="settingsPanel">
+      <button id="settingsButton" class="icon-button" type="button" title="通话设置" aria-label="通话设置" aria-expanded="false" aria-controls="settingsPanel">
         <i data-lucide="settings-2"></i>
       </button>
     </div>
@@ -34,7 +34,7 @@
 
   <aside class="settings-panel" id="settingsPanel" hidden>
     <div class="settings-head">
-      <strong>语音设置</strong>
+      <strong>通话设置</strong>
       <button id="closeSettings" class="icon-button compact" type="button" title="关闭" aria-label="关闭设置"><i data-lucide="x"></i></button>
     </div>
     <label>语音识别</label>
@@ -42,6 +42,27 @@
       <button type="button" data-stt-mode="auto" class="active">自动</button>
       <button type="button" data-stt-mode="browser">浏览器</button>
       <button type="button" data-stt-mode="astrbot">AstrBot</button>
+    </div>
+    <div class="settings-field talk-mode-field">
+      <label>讲话方式</label>
+      <div class="segmented talk-mode-control" role="group" aria-label="讲话方式">
+        <button type="button" data-talk-mode="free" class="active">自由讲话</button>
+        <button type="button" data-talk-mode="push">按键讲话</button>
+      </div>
+      <div id="talkKeySetting" class="talk-key-setting" hidden>
+        <span>讲话按键</span>
+        <button id="talkKeyCapture" class="key-capture" type="button" aria-label="修改讲话按键">
+          <kbd id="talkKeyLabel">空格</kbd>
+          <small>点击修改</small>
+        </button>
+      </div>
+    </div>
+    <div class="settings-field camera-device-field">
+      <label for="cameraDeviceSelect">摄像头</label>
+      <select id="cameraDeviceSelect" aria-describedby="cameraDeviceHint" disabled>
+        <option value="">自动选择</option>
+      </select>
+      <span id="cameraDeviceHint">正在检测摄像头</span>
     </div>
     <div class="capability-list">
       <span><b>对话</b><em id="chatCapability">检查中</em></span>
@@ -73,8 +94,13 @@
             </div>
           </div>
         </div>
-        <h1 id="callName">Bot</h1>
-        <p id="callStatus">等待接通</p>
+        <div class="call-identity">
+          <span class="call-status-dot" aria-hidden="true"></span>
+          <div>
+            <h1 id="callName">Bot</h1>
+            <p id="callStatus" aria-live="polite">等待接通</p>
+          </div>
+        </div>
       </div>
 
       <div class="transcript" id="callTranscript" aria-live="polite"></div>
@@ -93,7 +119,7 @@
           <i data-lucide="volume-x"></i>
         </button>
       </div>
-      <span id="holdHint" class="hold-hint" hidden>按住麦克风说话</span>
+      <span id="holdHint" class="hold-hint" hidden>按住空格或麦克风说话</span>
     </section>
 
     <section class="view watch-view" id="watchView" aria-label="共同观影房间">
@@ -118,7 +144,7 @@
               <button id="videoPlayPause" class="video-control-button primary" type="button" title="播放" aria-label="播放">
                 <i data-lucide="play"></i>
               </button>
-              <button id="videoSeekForward" class="video-control-button" type="button" title="前进 10 秒，长按 3 倍速播放" aria-label="前进 10 秒，长按 3 倍速播放">
+              <button id="videoSeekForward" class="video-control-button" type="button" title="前进 10 秒，长按 2 倍速播放" aria-label="前进 10 秒，长按 2 倍速播放">
                 <i data-lucide="rotate-cw"></i>
               </button>
               <span id="videoTime" class="video-time">00:00 / 00:00</span>
@@ -154,16 +180,23 @@
             <span id="videoMeta">00:00 / 00:00</span>
           </div>
           <div class="tool-actions">
+            <button id="watchCallToggle" class="icon-button" type="button" title="接通语音" aria-label="接通语音"><i data-lucide="phone"></i></button>
             <button id="openLocalVideo" class="icon-button" type="button" title="打开本地视频" aria-label="打开本地视频"><i data-lucide="folder-open"></i></button>
             <button id="openVideoUrl" class="icon-button" type="button" title="打开视频链接" aria-label="打开视频链接"><i data-lucide="link"></i></button>
             <button id="observeFrame" class="icon-button" type="button" title="看看当前画面" aria-label="看看当前画面"><i data-lucide="scan-eye"></i></button>
           </div>
         </div>
 
-        <label class="toggle-row">
-          <input id="autoComment" type="checkbox" />
-          <span>自然评论</span>
-        </label>
+        <div class="watch-options">
+          <label class="toggle-row">
+            <input id="autoComment" type="checkbox" />
+            <span>自然评论</span>
+          </label>
+          <label class="toggle-row">
+            <input id="watchTtsEnabled" type="checkbox" />
+            <span>语音回复</span>
+          </label>
+        </div>
       </div>
 
       <aside class="watch-conversation">
@@ -171,7 +204,7 @@
           <strong>一起看着</strong>
           <span id="watchStatus">等待视频</span>
         </div>
-        <div class="transcript" id="watchTranscript" aria-live="polite"></div>
+        <div class="transcript" id="watchTranscript" tabindex="0" aria-label="观影对话记录" aria-live="polite"></div>
       </aside>
     </section>
   </main>

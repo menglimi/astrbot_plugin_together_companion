@@ -39,7 +39,7 @@ from .tunnel import CloudflareQuickTunnel
 
 
 PLUGIN_NAME = "astrbot_plugin_together_companion"
-PLUGIN_VERSION = "0.5.0"
+PLUGIN_VERSION = "0.6.0"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 _active_plugin: "TogetherCompanionPlugin | None" = None
 
@@ -59,6 +59,7 @@ def get_together_companion_bridge() -> TogetherCompanionTokenBridge | None:
 BASE_REALTIME_PROMPT = """
 你正在与主要用户实时共处，而不是在普通聊天窗口里写长回复。
 像自然通话一样说话：优先使用一到三句简短、口语化、能直接听懂的话；不要使用 Markdown、列表、标题、括号舞台动作或结尾表情。
+实时房间会在回复生成后独立处理语种转换和语音合成；这里只输出用户最终应看到的自然聊天文字，不要输出 <pc_tts>、<tts>、[whispering]、[soft] 等内部语音标签，也不要为了语音再重复一份同义正文。
 不要每句话都称呼用户，不要播报“我正在分析”，不要复述用户刚说过的话。允许停顿，也允许在没有必要延伸时简短收住。
 结合当前人格、精力、情绪和双方关系自然调整语气：低精力时可以更轻、更短，用户情绪明显时先贴合感受，再决定是否延伸话题。句数是自然倾向，不要为了凑长度截断完整意思。
 这里的媒体、图片和视频属于当前播放来源。用户和你都是观看者；除非用户明确说明，否则绝不能把作品误认成用户制作的内容。
@@ -1568,6 +1569,7 @@ class TogetherCompanionPlugin(Star):
             "vision": capabilities["vision"],
             "watch": {
                 "auto_comment": self.watch_auto_comment,
+                "tts_enabled": bool(room.watch_tts_enabled),
                 "comment_interval_seconds": self.watch_comment_interval_seconds,
                 "scene_min_interval_seconds": self.watch_scene_min_interval_seconds,
                 "duck_video_volume": self.watch_duck_video_volume,
@@ -1594,10 +1596,44 @@ class TogetherCompanionPlugin(Star):
         try:
             meta = provider.meta()
             if isinstance(meta, dict):
-                return _single_line(meta.get("model") or meta.get("id") or meta.get("type"), 100)
-            return _single_line(getattr(meta, "model", "") or getattr(meta, "id", "") or getattr(meta, "type", ""), 100)
+                label = _single_line(meta.get("model") or meta.get("id") or meta.get("type"), 100)
+            else:
+                label = _single_line(
+                    getattr(meta, "model", "") or getattr(meta, "id", "") or getattr(meta, "type", ""),
+                    100,
+                )
+            if label:
+                return label
         except Exception:
-            return _single_line(provider.__class__.__name__, 100)
+            pass
+        for config_name in ("provider_config", "config"):
+            config = getattr(provider, config_name, None)
+            if not isinstance(config, dict):
+                continue
+            label = _single_line(config.get("model") or config.get("id") or config.get("type"), 100)
+            if label:
+                return label
+        return _single_line(provider.__class__.__name__, 100)
+
+    def _conversation_log_models(self, *, has_image: bool) -> tuple[str, str]:
+        """Return the reply and optional vision model labels used for one turn."""
+        try:
+            chat_provider = self._get_chat_provider()
+        except Exception:
+            chat_provider = None
+        try:
+            vision_provider = self._get_vision_provider() if has_image else None
+        except Exception:
+            vision_provider = None
+        reply_provider = (
+            vision_provider
+            if has_image and (chat_provider is None or vision_provider is chat_provider)
+            else chat_provider
+        )
+        return (
+            self._provider_label(reply_provider),
+            self._provider_label(vision_provider) if has_image else "",
+        )
 
     @staticmethod
     def _provider_usage_id(provider: Any) -> str:
@@ -1751,19 +1787,10 @@ class TogetherCompanionPlugin(Star):
             logger.debug("[TogetherCompanion] 读取陪伴 TTS 配置失败: %s", exc)
             return {}
 
-    @staticmethod
-    def _private_companion_bridge_will_play_local(api: Any | None) -> bool:
-        plugin = getattr(api, "_plugin", None) if api is not None else None
-        if plugin is None:
-            return False
-        enabled = bool(getattr(plugin, "enable_tts_local_playback", False))
-        live_only = bool(getattr(plugin, "enable_tts_local_playback_live_only", False))
-        return enabled and not live_only
-
     async def handle_room_payload(self, room: RoomSession, payload: dict[str, Any]) -> None:
         message_type = _single_line(payload.get("type"), 40).lower()
         if message_type == "call_state":
-            room.call_active = bool(payload.get("active")) and room.mode == "call"
+            room.call_active = bool(payload.get("active"))
             room.call_last_user_activity = time.monotonic()
             if not room.call_active:
                 room.call_last_proactive_at = 0.0
@@ -1780,7 +1807,7 @@ class TogetherCompanionPlugin(Star):
                 room.update_call_camera(frame)
             return
         if message_type == "call_activity":
-            if room.call_active and room.mode == "call":
+            if room.call_active:
                 room.call_last_user_activity = time.monotonic()
             return
         if message_type == "call_idle":
@@ -1799,6 +1826,13 @@ class TogetherCompanionPlugin(Star):
             self._start_room_task(
                 room,
                 self._generate_call_proactive(room, idle_seconds=int(idle_for)),
+            )
+            return
+        if message_type == "set_watch_tts":
+            room.watch_tts_enabled = bool(payload.get("enabled"))
+            await self.send_room_payload(
+                room,
+                {"type": "watch_tts", "enabled": room.watch_tts_enabled},
             )
             return
         if message_type == "create_invite":
@@ -1822,7 +1856,6 @@ class TogetherCompanionPlugin(Star):
             if changed:
                 room.cancel_generation()
                 if next_mode != "call":
-                    room.call_active = False
                     room.update_call_camera("")
             room.mode = next_mode
             await self.send_room_payload(room, {"type": "mode", "mode": room.mode})
@@ -1842,8 +1875,32 @@ class TogetherCompanionPlugin(Star):
             return
         if message_type == "interrupt":
             interrupted = room.cancel_generation()
+            room.active_utterance_id = ""
             await self.send_room_payload(room, {"type": "stop_audio", "interrupted": interrupted})
             await self._stop_live_mouth_sync(room)
+            return
+        if message_type == "exclude_utterance":
+            utterance_id = _single_line(payload.get("id"), 80)
+            excluded = bool(utterance_id and utterance_id == room.active_utterance_id)
+            if excluded:
+                room.active_utterance_id = ""
+                room.cancel_generation()
+                room.watch_events = [
+                    item
+                    for item in room.watch_events
+                    if str((item.get("metadata") or {}).get("utterance_id") or "") != utterance_id
+                ]
+                await self._stop_live_mouth_sync(room)
+            await self.send_room_payload(
+                room,
+                {"type": "utterance_excluded", "id": utterance_id, "excluded": excluded},
+            )
+            if excluded:
+                await self.send_room_payload(room, {"type": "stop_audio", "interrupted": True})
+                await self.send_room_payload(
+                    room,
+                    {"type": "status", "state": "listening", "text": "正在听"},
+                )
             return
         if message_type == "user_text":
             text = str(payload.get("text") or "").strip()[:4000]
@@ -1851,6 +1908,13 @@ class TogetherCompanionPlugin(Star):
                 if room.call_active and room.mode == "call":
                     room.call_last_user_activity = time.monotonic()
                 input_source = _single_line(payload.get("source"), 40).lower()
+                utterance_id = (
+                    _single_line(payload.get("utterance_id"), 80)
+                    if input_source == "browser_stt"
+                    else ""
+                )
+                if input_source == "browser_stt" and not utterance_id:
+                    utterance_id = uuid.uuid4().hex
                 raw_alternatives = payload.get("alternatives")
                 alternatives = [
                     str(item or "").strip()[:4000]
@@ -1869,14 +1933,16 @@ class TogetherCompanionPlugin(Star):
                 elif room.mode != "watch":
                     frame = ""
                 if input_source == "browser_stt":
-                    self._start_room_task(
+                    self._start_utterance_task(
                         room,
+                        utterance_id,
                         self._correct_stt_and_reply(
                             room,
                             text,
                             source=input_source,
                             alternatives=alternatives,
                             image_data_url=frame,
+                            utterance_id=utterance_id,
                         ),
                     )
                 else:
@@ -1898,9 +1964,17 @@ class TogetherCompanionPlugin(Star):
                     frame = room.recent_call_camera_frame()
             else:
                 frame = ""
-            self._start_room_task(
+            utterance_id = _single_line(payload.get("utterance_id"), 80) or uuid.uuid4().hex
+            self._start_utterance_task(
                 room,
-                self._transcribe_and_reply(room, audio_bytes, mime_type, image_data_url=frame),
+                utterance_id,
+                self._transcribe_and_reply(
+                    room,
+                    audio_bytes,
+                    mime_type,
+                    image_data_url=frame,
+                    utterance_id=utterance_id,
+                ),
             )
             return
         if message_type == "resolve_media":
@@ -2122,6 +2196,29 @@ class TogetherCompanionPlugin(Star):
 
         task.add_done_callback(ensure_operation_closed)
 
+    def _start_utterance_task(self, room: RoomSession, utterance_id: str, operation: Any) -> None:
+        room.active_utterance_id = utterance_id
+        operation_started = False
+
+        async def run() -> None:
+            nonlocal operation_started
+            operation_started = True
+            try:
+                await operation
+            finally:
+                if room.active_utterance_id == utterance_id:
+                    room.active_utterance_id = ""
+
+        self._start_room_task(room, run())
+        task = room.generation_task
+
+        def close_unstarted_operation(_finished: asyncio.Task) -> None:
+            if not operation_started and inspect.iscoroutine(operation):
+                operation.close()
+
+        if isinstance(task, asyncio.Task):
+            task.add_done_callback(close_unstarted_operation)
+
     def _start_media_resolution(self, room: RoomSession, operation: Any) -> None:
         room.cancel_media_resolution()
         self._spawn_task(room, operation, attr="media_resolution_task", label="视频解析任务失败", warn=True)
@@ -2146,8 +2243,31 @@ class TogetherCompanionPlugin(Star):
         *,
         image_data_url: str = "",
         input_source: str = "",
+        utterance_id: str = "",
     ) -> None:
-        await self.send_room_payload(room, {"type": "user_text", "text": text})
+        turn_id = _single_line(utterance_id, 12) or uuid.uuid4().hex[:12]
+        source_label = _single_line(input_source, 40) or "text"
+        reply_model, vision_model = self._conversation_log_models(has_image=bool(image_data_url))
+        logger.info(
+            "[TogetherCompanion] 用户输入: turn=%s room=%s mode=%s source=%s model=%s%s text=%s",
+            turn_id,
+            room.room_id[:10],
+            room.mode,
+            source_label,
+            reply_model,
+            f" vision_model={vision_model}" if vision_model else "",
+            _single_line(text, 4000),
+        )
+        reply_started_at = time.perf_counter()
+        await self.send_room_payload(
+            room,
+            {
+                "type": "user_text",
+                "text": text,
+                "utterance_id": utterance_id,
+                "cancellable": bool(utterance_id and input_source in {"browser_stt", "astrbot_stt"}),
+            },
+        )
         await self.send_room_payload(room, {"type": "status", "state": "thinking", "text": "正在回应"})
         try:
             try:
@@ -2178,24 +2298,35 @@ class TogetherCompanionPlugin(Star):
         if not response:
             await self.send_room_error(room, "模型没有返回可用回复", code="empty_reply")
             return
+        _spoken_response, visible_response = self._split_tts_payload(response)
+        visible_response = visible_response or self._clean_model_text(response)
+        logger.info(
+            "[TogetherCompanion] 模型回复: turn=%s room=%s mode=%s model=%s elapsed=%dms text=%s",
+            turn_id,
+            room.room_id[:10],
+            room.mode,
+            reply_model,
+            int((time.perf_counter() - reply_started_at) * 1000),
+            _single_line(visible_response, 4000),
+        )
         room.append_turn("user", text, history_turns=self.history_turns)
-        room.append_turn("assistant", response, history_turns=self.history_turns)
+        room.append_turn("assistant", visible_response, history_turns=self.history_turns)
         if self.sync_astrbot_conversation:
-            await self._record_astrbot_turns(room, text, response)
+            await self._record_astrbot_turns(room, text, visible_response)
         if room.mode == "watch":
             room.append_watch_event(
                 "bot",
-                f"Bot 回应：{_single_line(response, 400)}",
+                f"Bot 回应：{_single_line(visible_response, 400)}",
                 media_time=float(room.media_state.get("current_time") or 0.0),
             )
             self._schedule_watch_memory_refresh(room)
         if self.record_visible_turns:
-            self._create_background_task(self._record_memory_turns(room, text, response))
-        await self._push_live_subtitle(response, source="together_companion")
+            self._create_background_task(self._record_memory_turns(room, text, visible_response))
+        await self._push_live_subtitle(visible_response, source="together_companion")
         await self._synthesize_and_send(
             room,
             response,
-            display_text=response,
+            display_text=visible_response,
             display_source="reply",
         )
         if room.call_active and room.mode == "call":
@@ -2248,13 +2379,14 @@ class TogetherCompanionPlugin(Star):
             room.call_last_user_activity = time.monotonic()
             await self.send_room_payload(room, {"type": "status", "state": "listening", "text": "正在听"})
 
-    def _append_user_watch_event(self, room: RoomSession, text: str) -> None:
+    def _append_user_watch_event(self, room: RoomSession, text: str, *, utterance_id: str = "") -> None:
         if room.mode != "watch":
             return
         room.append_watch_event(
             "user",
             f"用户说：{_single_line(text, 400)}",
             media_time=float(room.media_state.get("current_time") or 0.0),
+            metadata={"utterance_id": utterance_id} if utterance_id else None,
         )
 
     async def _correct_stt_and_reply(
@@ -2265,6 +2397,7 @@ class TogetherCompanionPlugin(Star):
         source: str,
         alternatives: list[str] | None = None,
         image_data_url: str = "",
+        utterance_id: str = "",
     ) -> None:
         await self.send_room_payload(room, {"type": "status", "state": "transcribing", "text": "正在校对"})
         corrected = await self._correct_stt_transcript(
@@ -2273,12 +2406,13 @@ class TogetherCompanionPlugin(Star):
             source=source,
             alternatives=alternatives,
         )
-        self._append_user_watch_event(room, corrected)
+        self._append_user_watch_event(room, corrected, utterance_id=utterance_id)
         await self._reply_to_user(
             room,
             corrected,
             image_data_url=image_data_url,
             input_source=source,
+            utterance_id=utterance_id,
         )
 
     async def _correct_stt_transcript(
@@ -2773,6 +2907,8 @@ class TogetherCompanionPlugin(Star):
         parts = [await self._persona_prompt_cached(), BASE_REALTIME_PROMPT]
         if room.mode == "watch":
             parts.append(WATCH_SHARED_CONTEXT_PROMPT)
+            if room.call_active:
+                parts.append(CALL_CONNECTED_CONTEXT_PROMPT)
         elif room.mode == "call":
             parts.append(
                 CALL_CONNECTED_CONTEXT_PROMPT
@@ -3908,10 +4044,50 @@ class TogetherCompanionPlugin(Star):
 
     @staticmethod
     def _spoken_text(value: str) -> str:
-        text = re.sub(r"```.*?```", "", str(value or ""), flags=re.DOTALL)
+        spoken_source, _visible = TogetherCompanionPlugin._split_tts_payload(value)
+        text = re.sub(r"```.*?```", "", spoken_source, flags=re.DOTALL)
         text = re.sub(r"[`*_>#]", "", text)
         text = re.sub(r"\[(?:SILENT|保持安静)\]", "", text, flags=re.IGNORECASE)
         return re.sub(r"\s+", " ", text).strip()[:1200]
+
+    @staticmethod
+    def _split_tts_payload(value: Any) -> tuple[str, str]:
+        """Split private-companion voice markup into speech and visible text."""
+        raw = str(value or "").strip()
+        if not raw:
+            return "", ""
+        block_pattern = re.compile(
+            r"<(?:pc[_-]?tts|t{2,}s)\b[^>]*>(.*?)</(?:pc[_-]?tts|t{2,}s)\s*>",
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        matches = list(block_pattern.finditer(raw))
+        if not matches:
+            cleaned = re.sub(
+                r"</?(?:pc[_-]?tts|t{2,}s)\b[^>]*>",
+                "",
+                raw,
+                flags=re.IGNORECASE,
+            ).strip()
+            return cleaned, cleaned
+
+        spoken = " ".join(match.group(1).strip() for match in matches if match.group(1).strip())
+        visible = block_pattern.sub("", raw)
+        visible = re.sub(
+            r"</?(?:pc[_-]?tts|t{2,}s)\b[^>]*>",
+            "",
+            visible,
+            flags=re.IGNORECASE,
+        )
+        visible = re.sub(r"\s+", " ", visible).strip()
+        if not visible:
+            visible = re.sub(
+                r"\[(?:[a-z][a-z0-9 _-]{0,30})\]",
+                "",
+                spoken,
+                flags=re.IGNORECASE,
+            )
+            visible = re.sub(r"\s+", " ", visible).strip()
+        return spoken.strip(), visible[:4000]
 
     async def _synthesize_and_send(
         self,
@@ -3922,7 +4098,14 @@ class TogetherCompanionPlugin(Star):
         display_source: str = "",
     ) -> None:
         spoken = self._spoken_text(text)
-        visible_text = str(display_text or text or "").strip()
+        _display_spoken, visible_text = self._split_tts_payload(display_text or text)
+        if room.mode == "watch" and not room.watch_tts_enabled:
+            if visible_text:
+                await self.send_room_payload(
+                    room,
+                    {"type": "bot_text", "text": visible_text, "source": display_source},
+                )
+            return
         if not spoken:
             if visible_text:
                 await self.send_room_payload(
@@ -3931,52 +4114,78 @@ class TogetherCompanionPlugin(Star):
                 )
             return
         provider = self._get_tts_provider()
-        if provider is None:
+        api = self._private_companion_api()
+        bridge = getattr(api, "synthesize_realtime_voice", None) if api is not None else None
+        voice_config = self._companion_realtime_voice_config()
+        browser_language = str(voice_config.get("browser_language") or "zh-CN")
+        if provider is None and not callable(bridge):
             await self.send_room_payload(
                 room,
                 {
                     "type": "tts_fallback",
                     "text": spoken,
-                    "language": getattr(self, "browser_language", "") or "zh-CN",
+                    "language": browser_language,
                     "display_text": visible_text,
                     "source": display_source,
                 },
             )
             return
         await self.send_room_payload(room, {"type": "status", "state": "speaking", "text": "正在说话"})
-        api = self._private_companion_api()
-        bridge = getattr(api, "synthesize_realtime_voice", None) if api is not None else None
-        if callable(bridge) and self._private_companion_bridge_will_play_local(api):
-            logger.debug("[TogetherCompanion] 陪伴 TTS 已启用本机播放，改用 Provider 直接合成以避免与浏览器重音")
-            bridge = None
         try:
             synthesis: dict[str, Any] | None = None
             if callable(bridge):
+                bridge_kwargs: dict[str, Any] = {
+                    "tts_provider": provider,
+                    "source": "together_companion",
+                }
+                try:
+                    bridge_parameters = inspect.signature(bridge).parameters.values()
+                    if any(
+                        parameter.name == "play_local"
+                        or parameter.kind == inspect.Parameter.VAR_KEYWORD
+                        for parameter in bridge_parameters
+                    ):
+                        bridge_kwargs["play_local"] = False
+                except (TypeError, ValueError):
+                    pass
                 bridged = await self._invoke_extension(
                     api,
                     "synthesize_realtime_voice",
                     spoken,
-                    tts_provider=provider,
-                    source="together_companion",
                     timeout=120,
+                    **bridge_kwargs,
                 )
                 synthesis = dict(bridged) if isinstance(bridged, dict) else {}
                 audio_path = synthesis.get("audio_path", "")
             else:
                 audio_path = await asyncio.wait_for(provider.get_audio(spoken), timeout=120)
+            if room.mode == "watch" and not room.watch_tts_enabled:
+                if visible_text:
+                    await self.send_room_payload(
+                        room,
+                        {"type": "bot_text", "text": visible_text, "source": display_source},
+                    )
+                return
             path = Path(str(audio_path or ""))
             if not path.is_file():
                 if synthesis is not None:
-                    await self.send_room_payload(
-                        room,
-                        {
-                            "type": "tts_fallback",
-                            "text": synthesis.get("fallback_text") or spoken,
-                            "language": synthesis.get("language") or getattr(self, "browser_language", "") or "zh-CN",
-                            "display_text": visible_text,
-                            "source": display_source,
-                        },
-                    )
+                    fallback_text = str(synthesis.get("fallback_text") or "").strip()
+                    if fallback_text:
+                        await self.send_room_payload(
+                            room,
+                            {
+                                "type": "tts_fallback",
+                                "text": fallback_text,
+                                "language": synthesis.get("language") or browser_language,
+                                "display_text": visible_text,
+                                "source": display_source,
+                            },
+                        )
+                    elif visible_text:
+                        await self.send_room_payload(
+                            room,
+                            {"type": "bot_text", "text": visible_text, "source": display_source},
+                        )
                     return
                 raise RuntimeError("TTS Provider 未返回有效音频文件")
             audio_bytes = await asyncio.to_thread(path.read_bytes)
@@ -4003,16 +4212,27 @@ class TogetherCompanionPlugin(Star):
             raise
         except Exception as exc:
             logger.warning("[TogetherCompanion] TTS 合成失败，回退浏览器朗读: %s", exc)
-            await self.send_room_payload(
-                room,
-                {
-                    "type": "tts_fallback",
-                    "text": spoken,
-                    "language": getattr(self, "browser_language", "") or "zh-CN",
-                    "display_text": visible_text,
-                    "source": display_source,
-                },
-            )
+            if room.mode == "watch" and not room.watch_tts_enabled and visible_text:
+                await self.send_room_payload(
+                    room,
+                    {"type": "bot_text", "text": visible_text, "source": display_source},
+                )
+            elif callable(bridge) and visible_text:
+                await self.send_room_payload(
+                    room,
+                    {"type": "bot_text", "text": visible_text, "source": display_source},
+                )
+            else:
+                await self.send_room_payload(
+                    room,
+                    {
+                        "type": "tts_fallback",
+                        "text": spoken,
+                        "language": browser_language,
+                        "display_text": visible_text,
+                        "source": display_source,
+                    },
+                )
 
     async def _push_live_subtitle(self, text: str, *, source: str) -> None:
         try:
@@ -4068,6 +4288,7 @@ class TogetherCompanionPlugin(Star):
         mime_type: str,
         *,
         image_data_url: str = "",
+        utterance_id: str = "",
     ) -> None:
         provider = self._get_stt_provider()
         if provider is None:
@@ -4091,6 +4312,7 @@ class TogetherCompanionPlugin(Star):
                 text[:4000],
                 source="astrbot_stt",
                 image_data_url=image_data_url,
+                utterance_id=utterance_id,
             )
         except asyncio.CancelledError:
             raise

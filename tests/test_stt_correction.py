@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import asyncio
 import unittest
 from types import SimpleNamespace
 
@@ -217,6 +218,132 @@ class SttCorrectionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("语音通话尚未接通", prompt)
         self.assertNotIn("已经接通实时语音通话", prompt)
+
+    async def test_excluding_active_utterance_cancels_reply_task(self) -> None:
+        provider = _CorrectionProvider("{}")
+        plugin = self._plugin(provider)
+        room = RoomSession("room", "ticket", "call", "995051631", None)
+        cancelled = asyncio.Event()
+        sent: list[dict] = []
+
+        async def reply_operation() -> None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        async def send(_room, payload) -> None:
+            sent.append(payload)
+
+        async def no_op(*_args, **_kwargs) -> None:
+            return None
+
+        plugin.send_room_payload = send
+        plugin._stop_live_mouth_sync = no_op
+        plugin._start_utterance_task(room, "speech-1", reply_operation())
+        task = room.generation_task
+        await asyncio.sleep(0)
+
+        await plugin.handle_room_payload(room, {"type": "exclude_utterance", "id": "speech-1"})
+        await asyncio.sleep(0)
+
+        self.assertTrue(cancelled.is_set())
+        self.assertTrue(task.done())
+        self.assertEqual("", room.active_utterance_id)
+        self.assertEqual("utterance_excluded", sent[0]["type"])
+        self.assertTrue(sent[0]["excluded"])
+        self.assertEqual("stop_audio", sent[1]["type"])
+
+    async def test_stt_echo_is_cancellable_and_history_stays_normal(self) -> None:
+        provider = _CorrectionProvider("{}")
+        plugin = self._plugin(provider)
+        room = RoomSession("room", "ticket", "call", "995051631", None)
+        sent: list[dict] = []
+
+        async def send(_room, payload) -> None:
+            sent.append(payload)
+
+        async def generate(*_args, **_kwargs) -> str:
+            return "听到了。"
+
+        async def no_op(*_args, **_kwargs) -> None:
+            return None
+
+        plugin.send_room_payload = send
+        plugin._generate_model_text = generate
+        plugin._synthesize_and_send = no_op
+        plugin._push_live_subtitle = no_op
+        plugin.history_turns = 6
+        plugin.sync_astrbot_conversation = False
+        plugin.record_visible_turns = False
+
+        with self.assertLogs("together-tests", level="INFO") as captured:
+            await plugin._reply_to_user(
+                room,
+                "政府单位。",
+                input_source="browser_stt",
+                utterance_id="speech-2",
+            )
+
+        self.assertEqual("user_text", sent[0]["type"])
+        self.assertEqual("speech-2", sent[0]["utterance_id"])
+        self.assertTrue(sent[0]["cancellable"])
+        self.assertEqual(
+            [
+                {"role": "user", "content": "政府单位。"},
+                {"role": "assistant", "content": "听到了。"},
+            ],
+            room.history,
+        )
+        log_text = "\n".join(captured.output)
+        self.assertIn("用户输入: turn=speech-2", log_text)
+        self.assertIn("source=browser_stt", log_text)
+        self.assertIn("model=_CorrectionProvider", log_text)
+        self.assertIn("text=政府单位。", log_text)
+        self.assertIn("模型回复: turn=speech-2", log_text)
+        self.assertIn("text=听到了。", log_text)
+
+    async def test_excluded_stt_never_enters_conversation_history(self) -> None:
+        provider = _CorrectionProvider("{}")
+        plugin = self._plugin(provider)
+        room = RoomSession("room", "ticket", "call", "995051631", None)
+        generation_started = asyncio.Event()
+        sent: list[dict] = []
+
+        async def send(_room, payload) -> None:
+            sent.append(payload)
+
+        async def generate(*_args, **_kwargs) -> str:
+            generation_started.set()
+            await asyncio.Event().wait()
+            return "不应返回"
+
+        async def no_op(*_args, **_kwargs) -> None:
+            return None
+
+        plugin.send_room_payload = send
+        plugin._generate_model_text = generate
+        plugin._stop_live_mouth_sync = no_op
+        plugin.history_turns = 6
+        plugin.sync_astrbot_conversation = False
+        plugin.record_visible_turns = False
+        plugin._start_utterance_task(
+            room,
+            "speech-3",
+            plugin._reply_to_user(
+                room,
+                "错误识别",
+                input_source="browser_stt",
+                utterance_id="speech-3",
+            ),
+        )
+        await generation_started.wait()
+
+        await plugin.handle_room_payload(room, {"type": "exclude_utterance", "id": "speech-3"})
+        await asyncio.sleep(0)
+
+        self.assertEqual([], room.history)
+        self.assertFalse(any(item.get("type") in {"bot_text", "audio", "tts_fallback"} for item in sent))
 
 
 if __name__ == "__main__":
