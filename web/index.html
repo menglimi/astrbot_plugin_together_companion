@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>我会和你在一起</title>
+  <link rel="stylesheet" href="/assets/app.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img id="brandAvatar" src="/avatar" alt="Bot 头像" />
+      <div>
+        <strong id="brandName">我会和你在一起</strong>
+        <span id="connectionStatus">正在进入房间</span>
+      </div>
+    </div>
+
+    <nav class="mode-tabs" aria-label="共处模式">
+      <button type="button" data-mode-tab="call" class="active"><i data-lucide="phone"></i><span>电话</span></button>
+      <button type="button" data-mode-tab="watch"><i data-lucide="play"></i><span>一起看</span></button>
+    </nav>
+
+    <button id="settingsButton" class="icon-button" type="button" title="语音设置" aria-label="语音设置" aria-expanded="false" aria-controls="settingsPanel">
+      <i data-lucide="settings-2"></i>
+    </button>
+  </header>
+
+  <aside class="settings-panel" id="settingsPanel" hidden>
+    <div class="settings-head">
+      <strong>语音设置</strong>
+      <button id="closeSettings" class="icon-button compact" type="button" title="关闭" aria-label="关闭设置"><i data-lucide="x"></i></button>
+    </div>
+    <label>语音识别</label>
+    <div class="segmented" id="sttModeControl" role="group" aria-label="语音识别方式">
+      <button type="button" data-stt-mode="auto" class="active">自动</button>
+      <button type="button" data-stt-mode="browser">浏览器</button>
+      <button type="button" data-stt-mode="astrbot">AstrBot</button>
+    </div>
+    <div class="capability-list">
+      <span><b>对话</b><em id="chatCapability">检查中</em></span>
+      <span><b>画面</b><em id="visionCapability">检查中</em></span>
+      <span><b>STT</b><em id="sttCapability">检查中</em></span>
+      <span><b>TTS</b><em id="ttsCapability">检查中</em></span>
+    </div>
+  </aside>
+
+  <main class="app-shell">
+    <section class="view call-view active" id="callView" aria-label="电话房间">
+      <div class="call-presence">
+        <div class="avatar-stage" id="avatarStage" data-state="idle">
+          <img id="callAvatar" src="/avatar" alt="Bot 头像" />
+          <div class="voice-bars" aria-hidden="true">
+            <i></i><i></i><i></i><i></i><i></i>
+          </div>
+        </div>
+        <h1 id="callName">Bot</h1>
+        <p id="callStatus">等待接通</p>
+      </div>
+
+      <div class="transcript" id="callTranscript" aria-live="polite"></div>
+
+      <div class="call-controls">
+        <button id="holdToTalk" class="round-control secondary" type="button" title="按住说话" aria-label="按住说话" hidden>
+          <i data-lucide="mic"></i>
+        </button>
+        <button id="callToggle" class="round-control primary" type="button" title="开始通话" aria-label="开始通话">
+          <i data-lucide="phone"></i>
+        </button>
+        <button id="interruptButton" class="round-control secondary" type="button" title="打断播放" aria-label="打断播放">
+          <i data-lucide="volume-x"></i>
+        </button>
+      </div>
+      <span id="holdHint" class="hold-hint" hidden>按住麦克风说话</span>
+    </section>
+
+    <section class="view watch-view" id="watchView" aria-label="共同观影房间">
+      <div class="video-column">
+        <div class="video-stage" id="videoStage" tabindex="0" aria-label="视频播放器">
+          <video id="watchVideo" playsinline preload="metadata"></video>
+          <audio id="watchAudio" preload="metadata" hidden></audio>
+          <div class="video-empty" id="videoEmpty">
+            <i data-lucide="clapperboard"></i>
+            <strong>选择一段视频</strong>
+          </div>
+          <button id="videoCenterToggle" class="video-center-toggle" type="button" title="播放" aria-label="播放">
+            <i data-lucide="play"></i>
+          </button>
+          <div id="videoSeekFeedback" class="video-seek-feedback" hidden aria-live="polite"></div>
+          <div id="videoControls" class="video-controls" aria-label="播放器控制">
+            <input id="videoProgress" class="video-progress" type="range" min="0" max="1000" value="0" step="1" aria-label="播放进度" disabled />
+            <div class="video-control-row">
+              <button id="videoSeekBack" class="video-control-button" type="button" title="后退 10 秒" aria-label="后退 10 秒">
+                <i data-lucide="rotate-ccw"></i>
+              </button>
+              <button id="videoPlayPause" class="video-control-button primary" type="button" title="播放" aria-label="播放">
+                <i data-lucide="play"></i>
+              </button>
+              <button id="videoSeekForward" class="video-control-button" type="button" title="前进 10 秒，长按 3 倍速播放" aria-label="前进 10 秒，长按 3 倍速播放">
+                <i data-lucide="rotate-cw"></i>
+              </button>
+              <span id="videoTime" class="video-time">00:00 / 00:00</span>
+              <span class="video-control-spacer"></span>
+              <button id="videoMute" class="video-control-button" type="button" title="静音" aria-label="静音">
+                <i data-lucide="volume-2"></i>
+              </button>
+              <input id="videoVolume" class="video-volume" type="range" min="0" max="1" value="1" step="0.05" aria-label="音量" />
+              <select id="videoRate" class="video-rate" aria-label="播放速度" title="播放速度">
+                <option value="0.5">0.5x</option>
+                <option value="0.75">0.75x</option>
+                <option value="1" selected>1x</option>
+                <option value="1.25">1.25x</option>
+                <option value="1.5">1.5x</option>
+                <option value="2">2x</option>
+              </select>
+            </div>
+          </div>
+          <button id="toggleFullscreen" class="video-fullscreen-button" type="button" title="进入全屏" aria-label="进入全屏">
+            <i data-lucide="maximize"></i>
+          </button>
+          <div class="fullscreen-companion" id="fullscreenCompanion" hidden aria-live="polite">
+            <img id="fullscreenAvatar" src="/avatar" alt="" />
+            <div class="fullscreen-speech" id="fullscreenSpeech">
+              <span id="fullscreenSpeechText"></span><i class="typing-caret" aria-hidden="true"></i>
+            </div>
+          </div>
+        </div>
+
+        <div class="video-toolbar">
+          <div class="video-title">
+            <strong id="videoTitle">尚未选择视频</strong>
+            <span id="videoMeta">00:00 / 00:00</span>
+          </div>
+          <div class="tool-actions">
+            <button id="openLocalVideo" class="icon-button" type="button" title="打开本地视频" aria-label="打开本地视频"><i data-lucide="folder-open"></i></button>
+            <button id="openVideoUrl" class="icon-button" type="button" title="打开视频链接" aria-label="打开视频链接"><i data-lucide="link"></i></button>
+            <button id="observeFrame" class="icon-button" type="button" title="看看当前画面" aria-label="看看当前画面"><i data-lucide="scan-eye"></i></button>
+          </div>
+        </div>
+
+        <label class="toggle-row">
+          <input id="autoComment" type="checkbox" />
+          <span>自然评论</span>
+        </label>
+      </div>
+
+      <aside class="watch-conversation">
+        <div class="watch-heading">
+          <strong>一起看着</strong>
+          <span id="watchStatus">等待视频</span>
+        </div>
+        <div class="transcript" id="watchTranscript" aria-live="polite"></div>
+      </aside>
+    </section>
+  </main>
+
+  <form class="message-composer" id="messageForm">
+    <input id="messageInput" type="text" maxlength="4000" autocomplete="off" placeholder="说点什么" aria-label="发送文字" />
+    <button id="sendMessage" class="send-button" type="submit" title="发送" aria-label="发送"><i data-lucide="send"></i></button>
+  </form>
+
+  <input id="localVideoInput" type="file" accept="video/*" hidden />
+  <canvas id="frameCanvas" hidden></canvas>
+
+  <dialog id="videoUrlDialog">
+    <form method="dialog" id="videoUrlForm">
+      <header>
+        <strong>打开视频链接</strong>
+        <button class="icon-button compact" value="cancel" type="submit" title="关闭" aria-label="关闭"><i data-lucide="x"></i></button>
+      </header>
+      <label for="videoUrlInput">B 站视频页，或浏览器可播放的媒体地址</label>
+      <input id="videoUrlInput" type="url" placeholder="https://www.bilibili.com/video/BV..." />
+      <footer>
+        <button class="text-button" value="cancel" type="submit">取消</button>
+        <button class="text-button primary-text" id="confirmVideoUrl" value="default" type="submit">打开</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" hidden role="status"></div>
+  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+  <script src="/assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+name: astrbot_plugin_together_companion
+display_name: 我会和你在一起
+author: menglimi
+author_url: https://github.com/menglimi
+version: 0.4.3
+description: 面向 AstrBot 陪伴体系的实时共处插件，提供浏览器电话房间、无剧透观前准备、连续剧情感知的共同观影、浏览器语音识别回退、TTS 播放和陪伴场景联动。
+desc: 和 Bot 打电话、一起看视频，并延续现有陪伴人格与生活状态。
+repo: https://github.com/menglimi/astrbot_plugin_together_companion
+category: AI 增强
+tags:
+  - 陪伴
+  - 语音通话
+  - 一起看视频
+  - 实时互动
+  - 可视化页面
+support_platforms:
+  - aiocqhttp
+astrbot_version: ">=4.22.0"

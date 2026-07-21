@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" content="#f4f5f0" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#282c29" media="(prefers-color-scheme: dark)" />
+  <title>我会和你在一起</title>
+  <link rel="stylesheet" href="./launcher.css" />
+</head>
+<body>
+  <main class="launcher-shell">
+    <header class="brand-row">
+      <span class="brand-mark" aria-hidden="true"><i data-lucide="audio-lines"></i></span>
+      <div class="brand-copy">
+        <span class="brand-eyebrow">一起房间 · 实时共处</span>
+        <h1>我会和你在一起</h1>
+        <p id="serviceStatus">正在连接房间服务</p>
+      </div>
+      <span class="presence" id="presenceBadge">检查中</span>
+    </header>
+
+    <section class="launch-grid" aria-label="房间入口">
+      <button class="launch-action call" type="button" data-mode="call">
+        <span class="action-icon" aria-hidden="true"><i data-lucide="phone"></i></span>
+        <span class="action-copy">
+          <strong>打电话</strong>
+          <small id="callCapability">正在检查语音链路</small>
+        </span>
+        <span class="action-go" aria-hidden="true"><i data-lucide="arrow-up-right"></i></span>
+      </button>
+      <button class="launch-action watch" type="button" data-mode="watch">
+        <span class="action-icon" aria-hidden="true"><i data-lucide="play"></i></span>
+        <span class="action-copy">
+          <strong>一起看</strong>
+          <small id="watchCapability">画面理解与语音评论</small>
+        </span>
+        <span class="action-go" aria-hidden="true"><i data-lucide="arrow-up-right"></i></span>
+      </button>
+    </section>
+
+    <section class="provider-strip" aria-label="能力状态">
+      <span><i data-lucide="message-circle"></i><b>对话</b><em id="chatProvider">未检查</em></span>
+      <span><i data-lucide="scan-eye"></i><b>视觉</b><em id="visionProvider">未检查</em></span>
+      <span><i data-lucide="ear"></i><b>STT</b><em id="sttProvider">浏览器回退</em></span>
+      <span><i data-lucide="volume-2"></i><b>TTS</b><em id="ttsProvider">未检查</em></span>
+    </section>
+
+    <section class="link-result" id="linkResult" hidden aria-live="polite">
+      <label for="roomUrl">房间链接</label>
+      <div>
+        <input id="roomUrl" type="text" readonly />
+        <button id="copyRoomUrl" class="icon-button" type="button" title="复制房间链接" aria-label="复制房间链接">
+          <i data-lucide="copy"></i>
+        </button>
+      </div>
+      <p id="launchMessage"></p>
+    </section>
+
+    <section class="config-section" aria-labelledby="configTitle">
+      <header class="config-head">
+        <div>
+          <h2 id="configTitle">房间设置</h2>
+          <span id="configState" aria-live="polite">正在读取</span>
+        </div>
+        <button id="saveConfig" class="save-button" type="submit" form="configForm" disabled>
+          <i data-lucide="save"></i><span>保存</span>
+        </button>
+      </header>
+
+      <form id="configForm">
+        <div class="config-tabs" role="tablist" aria-label="设置分类">
+          <button type="button" role="tab" aria-selected="true" aria-controls="configVoice" data-config-tab="voice" class="is-active">模型与语音</button>
+          <button type="button" role="tab" aria-selected="false" aria-controls="configWatch" data-config-tab="watch">观影节奏</button>
+          <button type="button" role="tab" aria-selected="false" aria-controls="configMemory" data-config-tab="memory">记忆与上下文</button>
+        </div>
+
+        <div class="config-view is-active" id="configVoice" role="tabpanel" data-config-view="voice">
+          <div class="field-grid">
+            <label class="field"><span>通话模型</span><select name="conversation.chat_provider_id" data-provider-kind="chat"></select></label>
+            <label class="field"><span>观影视觉模型</span><select name="conversation.vision_provider_id" data-provider-kind="vision"></select></label>
+            <label class="field"><span>STT Provider</span><select name="speech.stt_provider_id" data-provider-kind="stt"></select></label>
+            <label class="field"><span>TTS Provider</span><select name="speech.tts_provider_id" data-provider-kind="tts"></select></label>
+            <label class="field"><span>浏览器识别语言</span><input name="speech.browser_language" type="text" maxlength="20" autocomplete="off" /></label>
+          </div>
+          <div class="setting-row mode-row">
+            <span>默认语音识别</span>
+            <div class="segmented" role="group" aria-label="默认语音识别方式">
+              <button type="button" data-stt-choice="auto">自动</button>
+              <button type="button" data-stt-choice="browser">浏览器</button>
+              <button type="button" data-stt-choice="astrbot">AstrBot</button>
+            </div>
+            <input name="speech.stt_mode" type="hidden" value="auto" />
+          </div>
+          <label class="setting-row toggle-setting">
+            <span>Bot 名称语音校对</span>
+            <input name="speech.stt_correction_enabled" type="checkbox" role="switch" />
+          </label>
+          <label class="setting-row toggle-setting">
+            <span>浏览器 TTS 兜底</span>
+            <input name="speech.browser_tts_fallback" type="checkbox" role="switch" />
+          </label>
+        </div>
+
+        <div class="config-view" id="configWatch" role="tabpanel" data-config-view="watch" hidden>
+          <label class="setting-row toggle-setting"><span>观前无剧透准备</span><input name="watch.prepare_knowledge" type="checkbox" role="switch" /></label>
+          <label class="setting-row toggle-setting"><span>自然评论</span><input name="watch.auto_comment" type="checkbox" role="switch" /></label>
+          <label class="range-setting">
+            <span>最长观察间隔 <output data-output-for="watch.comment_interval_seconds"></output></span>
+            <input name="watch.comment_interval_seconds" type="range" min="20" max="600" step="5" />
+          </label>
+          <label class="range-setting">
+            <span>镜头观察最小间隔 <output data-output-for="watch.scene_min_interval_seconds"></output></span>
+            <input name="watch.scene_min_interval_seconds" type="range" min="8" max="120" step="1" />
+          </label>
+          <label class="range-setting">
+            <span>剧情记忆整理间隔 <output data-output-for="watch.memory_refresh_seconds"></output></span>
+            <input name="watch.memory_refresh_seconds" type="range" min="90" max="900" step="30" />
+          </label>
+          <label class="setting-row toggle-setting"><span>说话时降低影片原声</span><input name="watch.duck_video_volume" type="checkbox" role="switch" /></label>
+          <label class="range-setting">
+            <span>说话时原声音量 <output data-output-for="watch.duck_volume_percent"></output></span>
+            <input name="watch.duck_volume_percent" type="range" min="5" max="80" step="1" />
+          </label>
+        </div>
+
+        <div class="config-view" id="configMemory" role="tabpanel" data-config-view="memory" hidden>
+          <label class="range-setting">
+            <span>房间上下文轮数 <output data-output-for="conversation.history_turns"></output></span>
+            <input name="conversation.history_turns" type="range" min="2" max="60" step="1" />
+          </label>
+          <label class="setting-row toggle-setting"><span>读取相关长期记忆</span><input name="conversation.enable_memory_context" type="checkbox" role="switch" /></label>
+          <label class="setting-row toggle-setting"><span>通话安静时主动找话题</span><input name="conversation.call_proactive_enabled" type="checkbox" role="switch" /></label>
+          <label class="range-setting">
+            <span>主动找话题等待时间 <output data-output-for="conversation.call_idle_seconds"></output></span>
+            <input name="conversation.call_idle_seconds" type="range" min="60" max="900" step="30" />
+          </label>
+          <label class="setting-row toggle-setting"><span>同步到 AstrBot 对话记录</span><input name="conversation.sync_astrbot_conversation" type="checkbox" role="switch" /></label>
+          <label class="setting-row toggle-setting"><span>记录有意义的共同经历</span><input name="conversation.record_shared_experiences" type="checkbox" role="switch" /></label>
+          <label class="setting-row toggle-setting"><span>记录房间文字转写</span><input name="conversation.record_visible_turns" type="checkbox" role="switch" /></label>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" hidden role="status"></div>
+  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+  <script src="./launcher.js"></script>
+</body>
+</html>

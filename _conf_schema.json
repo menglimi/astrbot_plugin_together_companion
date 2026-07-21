@@ -1,0 +1,249 @@
+{
+  "server": {
+    "description": "房间服务",
+    "type": "object",
+    "hint": "通话与观影房间使用独立顶层页面，避免 AstrBot 拓展页沙箱阻止麦克风。默认只允许本机访问。",
+    "items": {
+      "enabled": {
+        "description": "启用房间服务",
+        "type": "bool",
+        "default": true
+      },
+      "host": {
+        "description": "监听地址",
+        "type": "string",
+        "default": "127.0.0.1",
+        "hint": "默认仅本机。跨设备访问时可改为 0.0.0.0，但必须同时配置 HTTPS/WSS 反向代理。",
+        "condition": {
+          "enabled": true
+        }
+      },
+      "port": {
+        "description": "监听端口",
+        "type": "int",
+        "default": 6321,
+        "hint": "端口被占用时会自动尝试后续端口。",
+        "condition": {
+          "enabled": true
+        }
+      },
+      "public_base_url": {
+        "description": "外部访问地址",
+        "type": "string",
+        "default": "",
+        "hint": "跨设备时填写反向代理后的 HTTPS 地址，例如 https://together.example.com。留空时使用本机地址。",
+        "condition": {
+          "enabled": true
+        }
+      },
+      "ticket_ttl_minutes": {
+        "description": "房间链接有效分钟数",
+        "type": "int",
+        "default": 10,
+        "hint": "链接只用于建立当前房间连接，过期后需从拓展页重新打开。",
+        "condition": {
+          "enabled": true
+        }
+      }
+    }
+  },
+  "conversation": {
+    "description": "实时对话",
+    "type": "object",
+    "items": {
+      "primary_user_id": {
+        "description": "主要用户 ID",
+        "type": "string",
+        "default": "",
+        "hint": "留空时尝试从“我会永远陪着你”的主要目标用户中自动识别。"
+      },
+      "bot_qq_id": {
+        "description": "Bot QQ 号覆盖",
+        "type": "string",
+        "default": "",
+        "hint": "通常留空，由“我会永远陪着你”自动识别。多 Bot 环境无法唯一判断时，可填写实际 Bot QQ 号以显示正确头像。"
+      },
+      "persona_id": {
+        "description": "通话人格",
+        "type": "string",
+        "default": "",
+        "_special": "select_persona",
+        "hint": "留空时使用 AstrBot 当前默认人格。"
+      },
+      "chat_provider_id": {
+        "description": "通话与观影模型",
+        "type": "string",
+        "default": "",
+        "_special": "select_provider",
+        "hint": "留空时使用 AstrBot 默认对话模型。主要负责实时聊天，可以选择响应较快的文本模型。"
+      },
+      "vision_provider_id": {
+        "description": "观影视觉模型",
+        "type": "string",
+        "default": "",
+        "_special": "select_provider",
+        "hint": "用于读取当前视频帧。留空时优先复用 AstrBot 的默认图片描述模型，再尝试支持图片的通话模型。"
+      },
+      "history_turns": {
+        "description": "房间上下文轮数",
+        "type": "int",
+        "default": 12,
+        "hint": "仅保留当前房间最近的对话，不保存原始音频。"
+      },
+      "enable_memory_context": {
+        "description": "接入长期记忆",
+        "type": "bool",
+        "default": true,
+        "hint": "每轮按当前话题从“我会牢牢记住你”读取少量相关记忆；没有安装记忆插件时自动跳过。"
+      },
+      "call_proactive_enabled": {
+        "description": "通话安静时主动找话题",
+        "type": "bool",
+        "default": true,
+        "hint": "语音通话持续安静一段时间后，由当前人格判断是否自然开口；用户正在说话、Bot 正在回应或没有合适话题时不会打扰。"
+      },
+      "call_idle_seconds": {
+        "description": "主动找话题等待秒数",
+        "type": "int",
+        "default": 120,
+        "hint": "从用户或 Bot 最后一次说话结束后开始计算，范围 60 到 900 秒。"
+      },
+      "sync_astrbot_conversation": {
+        "description": "同步到 AstrBot 对话记录",
+        "type": "bool",
+        "default": true,
+        "hint": "把网页中完成的用户文字和 Bot 最终回复追加到该用户当前的 AstrBot 私聊对话；没有现有对话时自动创建“一起房间”对话。"
+      },
+      "record_shared_experiences": {
+        "description": "记录有意义的共同经历",
+        "type": "bool",
+        "default": true,
+        "hint": "房间结束时由模型筛选并只保存一条有意义的通话或观影摘要；不会保存原始音频、视频帧或逐句字幕。没有安装记忆插件时自动跳过。"
+      },
+      "record_visible_turns": {
+        "description": "记录房间文字转写",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭。开启后把识别出的用户文字和 Bot 最终回复写入记忆时间线，仍不会保存原始音频或视频帧。"
+      },
+      "system_prompt": {
+        "description": "共处补充提示词",
+        "type": "text",
+        "default": "",
+        "editor_mode": true,
+        "editor_language": "text",
+        "hint": "附加在当前人格后。自然度优先通过这里和内置场景提示控制。"
+      }
+    }
+  },
+  "speech": {
+    "description": "语音链路",
+    "type": "object",
+    "hint": "没有 AstrBot STT 时可直接使用 Edge/Chrome 的浏览器语音识别。",
+    "items": {
+      "stt_mode": {
+        "description": "默认语音识别方式",
+        "type": "string",
+        "default": "auto",
+        "options": [
+          "auto",
+          "browser",
+          "astrbot"
+        ],
+        "hint": "自动模式优先使用浏览器免配置识别，不支持时回退 AstrBot STT。房间内可以临时切换。"
+      },
+      "stt_provider_id": {
+        "description": "AstrBot STT Provider",
+        "type": "string",
+        "default": "",
+        "_special": "select_provider_stt",
+        "hint": "可选。留空时跟随 AstrBot 当前 STT；自动模式也会在浏览器识别不可用时使用它。"
+      },
+      "stt_correction_enabled": {
+        "description": "语音转写智能校对",
+        "type": "bool",
+        "default": true,
+        "hint": "优先校正 Bot 名称的近音转写；普通句子会直接进入回复，避免额外等待。不确定时保留原文，不使用生硬的全局替换。"
+      },
+      "browser_language": {
+        "description": "浏览器识别语言",
+        "type": "string",
+        "default": "zh-CN",
+        "hint": "例如 zh-CN、ja-JP、en-US。"
+      },
+      "tts_provider_id": {
+        "description": "TTS Provider",
+        "type": "string",
+        "default": "",
+        "_special": "select_provider_tts",
+        "hint": "留空时跟随 AstrBot 当前 TTS。"
+      },
+      "browser_tts_fallback": {
+        "description": "浏览器朗读兜底",
+        "type": "bool",
+        "default": true,
+        "hint": "没有可用 TTS 或服务端合成失败时，使用浏览器 SpeechSynthesis 朗读。"
+      }
+    }
+  },
+  "watch": {
+    "description": "共同观影",
+    "type": "object",
+    "items": {
+      "prepare_knowledge": {
+        "description": "观前无剧透准备",
+        "type": "bool",
+        "default": true,
+        "hint": "异步整理视频页公开标题、UP 主、分区、标签和简介，并标注来源范围；不会预读字幕或搜索分集剧情。"
+      },
+      "auto_comment": {
+        "description": "默认开启自然评论",
+        "type": "bool",
+        "default": true,
+        "hint": "在开场、明显镜头变化、普通观察和结尾时让模型判断是否自然开口，允许长时间保持安静。"
+      },
+      "comment_interval_seconds": {
+        "description": "最长观察间隔",
+        "type": "int",
+        "default": 60,
+        "hint": "画面没有明显变化时的兜底观察间隔，不代表每次都会说话。",
+        "condition": {
+          "auto_comment": true
+        }
+      },
+      "scene_min_interval_seconds": {
+        "description": "镜头观察最小间隔",
+        "type": "int",
+        "default": 18,
+        "hint": "浏览器检测到明显镜头变化后，至少间隔多久才提交下一次观察；较小会更及时，也会增加视觉模型调用。",
+        "condition": {
+          "auto_comment": true
+        }
+      },
+      "memory_refresh_seconds": {
+        "description": "临时剧情整理间隔",
+        "type": "int",
+        "default": 240,
+        "hint": "按已播放内容和证据来源整理剧情、人物关系、待确认线索与双方反应，不会读取后续剧情。临时笔记本身不直接写入长期记忆；房间结束后的单条共同经历摘要由“记录有意义的共同经历”控制。",
+        "condition": {
+          "auto_comment": true
+        }
+      },
+      "duck_video_volume": {
+        "description": "Bot 说话时降低原声",
+        "type": "bool",
+        "default": true,
+        "hint": "播放 Bot 语音时平滑降低影片音量，结束后恢复。"
+      },
+      "duck_volume_percent": {
+        "description": "说话时原声音量百分比",
+        "type": "int",
+        "default": 28,
+        "hint": "例如 28 表示暂时降到原音量的 28%。",
+        "condition": {
+          "duck_video_volume": true
+        }
+      }
+    }
+  }
+}
