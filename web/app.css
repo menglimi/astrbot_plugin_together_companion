@@ -174,6 +174,15 @@ button { color: inherit; }
 .icon-button.compact { width: 32px; height: 32px; border-radius: 10px; }
 .icon-button svg { width: 18px; height: 18px; }
 
+.top-actions {
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.top-actions .icon-button { justify-self: auto; }
+
 button:focus-visible, input:focus-visible, video:focus-visible {
   outline: 3px solid color-mix(in srgb, var(--blue) 40%, transparent);
   outline-offset: 2px;
@@ -244,6 +253,13 @@ button:focus-visible, input:focus-visible, video:focus-visible {
   padding: 30px;
 }
 
+.call-visual-stage {
+  width: min(520px, 100%);
+  min-height: 340px;
+  display: grid;
+  place-items: center;
+}
+
 .avatar-stage {
   position: relative;
   width: min(340px, 68vw);
@@ -251,6 +267,96 @@ button:focus-visible, input:focus-visible, video:focus-visible {
   display: grid;
   place-items: center;
 }
+
+.avatar-stage[hidden], .camera-stage[hidden] { display: none; }
+
+.camera-stage {
+  position: relative;
+  width: min(500px, 100%);
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--line) 50%, transparent);
+  border-radius: 20px;
+  background: #0a0e0c;
+  box-shadow: 0 22px 54px rgba(8, 14, 10, .22);
+}
+
+.camera-stage > video {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  transform: scaleX(-1);
+}
+
+.camera-stage.rear-camera > video { transform: none; }
+
+.camera-live {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  border-radius: 999px;
+  color: #fff;
+  background: rgba(12, 16, 14, .70);
+  backdrop-filter: blur(10px);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.camera-live svg { width: 14px; height: 14px; color: #ff8e76; }
+
+.camera-action {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, .24);
+  border-radius: 50%;
+  color: #fff;
+  background: rgba(12, 16, 14, .66);
+  backdrop-filter: blur(10px);
+  cursor: pointer;
+}
+
+.camera-action[hidden] { display: none; }
+.camera-action:hover { background: rgba(12, 16, 14, .84); }
+.camera-action svg { width: 18px; height: 18px; }
+
+.camera-companion {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  max-width: calc(100% - 28px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 11px 6px 6px;
+  border: 1px solid rgba(255, 255, 255, .26);
+  border-radius: 999px;
+  color: #fff;
+  background: rgba(12, 16, 14, .70);
+  backdrop-filter: blur(10px);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.camera-companion img {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.camera-companion span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 存在感光晕 */
 .avatar-stage::after {
@@ -416,6 +522,8 @@ button:focus-visible, input:focus-visible, video:focus-visible {
 }
 
 .round-control.secondary { background: var(--surface); color: var(--muted); box-shadow: 0 8px 20px rgba(28, 37, 31, .10); }
+.round-control.secondary.camera-active { color: #fff; border-color: transparent; background: var(--blue-strong); }
+.round-control:disabled { opacity: .38; cursor: not-allowed; transform: none; box-shadow: none; }
 .round-control.secondary.recording {
   color: #fff;
   border-color: transparent;
@@ -1006,6 +1114,10 @@ dialog input {
 dialog input:focus { border-color: color-mix(in srgb, var(--blue) 55%, var(--line)); }
 dialog footer { display: flex; justify-content: flex-end; gap: 9px; margin-top: 20px; }
 
+.invite-link-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 9px; }
+.invite-link-row .text-button { display: inline-flex; align-items: center; gap: 7px; }
+.invite-link-row .text-button svg { width: 16px; height: 16px; }
+
 .text-button {
   min-height: 40px;
   padding: 0 18px;
@@ -1053,7 +1165,7 @@ dialog footer { display: flex; justify-content: flex-end; gap: 9px; margin-top: 
     border-radius: 18px;
   }
   .mode-tabs { grid-row: 2; grid-column: 1 / -1; width: 100%; }
-  .topbar > .icon-button { grid-column: 2; grid-row: 1; }
+  .top-actions { grid-column: 2; grid-row: 1; }
   .settings-panel { top: 118px; right: 12px; width: min(348px, calc(100% - 24px)); }
   .view { min-height: calc(100vh - 170px); }
   .call-view {
@@ -1064,7 +1176,9 @@ dialog footer { display: flex; justify-content: flex-end; gap: 9px; margin-top: 
     padding: 12px 14px;
   }
   .call-presence { min-height: 320px; padding: 8px; }
+  .call-visual-stage { min-height: 280px; }
   .avatar-stage { width: min(260px, 66vw); }
+  .camera-stage { width: min(500px, 92vw); max-height: 42vh; }
   .call-view > .transcript { height: 220px; align-self: stretch; }
   .call-controls { min-height: 84px; }
   .watch-view { grid-template-columns: 1fr; grid-template-rows: auto minmax(220px, 36vh); padding: 14px; gap: 14px; }
@@ -1078,6 +1192,7 @@ dialog footer { display: flex; justify-content: flex-end; gap: 9px; margin-top: 
   .video-toolbar { align-items: flex-start; flex-direction: column; }
   .tool-actions { align-self: stretch; justify-content: flex-end; }
   .call-controls { gap: 18px; }
+  .round-control { width: 52px; height: 52px; }
   .round-control.primary { width: 68px; height: 68px; }
   .video-stage { border-radius: 19px; box-shadow: 0 20px 44px rgba(8, 14, 10, .20); }
   .video-controls { inset: auto 8px 8px; padding: 9px 9px 8px; border-radius: 13px; }
@@ -1088,6 +1203,10 @@ dialog footer { display: flex; justify-content: flex-end; gap: 9px; margin-top: 
   .video-rate { width: 56px; min-width: 56px; height: 34px; padding: 0 4px; border-radius: 9px; }
   .video-center-toggle { width: 60px; height: 60px; }
   .video-empty { transform: translateY(-21px); }
+  .top-actions { gap: 5px; }
+  .top-actions .icon-button { width: 38px; height: 38px; border-radius: 12px; }
+  .invite-link-row { grid-template-columns: 1fr; }
+  .invite-link-row .text-button { justify-content: center; }
 }
 
 @media (max-width: 360px) {

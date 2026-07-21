@@ -56,6 +56,7 @@ class TogetherRoomServer:
 
         app = web.Application(client_max_size=self.MAX_WEBSOCKET_MESSAGE_BYTES)
         app.router.add_get("/", self._serve_index)
+        app.router.add_get("/join/{ticket}", self._serve_index)
         app.router.add_get("/assets/{name}", self._serve_asset)
         app.router.add_get("/avatar", self._serve_avatar)
         app.router.add_get("/media/{token}/{track}", self._serve_media)
@@ -122,7 +123,7 @@ class TogetherRoomServer:
             "Referrer-Policy": "no-referrer",
             "X-Content-Type-Options": "nosniff",
             "X-Frame-Options": "DENY",
-            "Permissions-Policy": "camera=(), geolocation=()",
+            "Permissions-Policy": "camera=(self), microphone=(self), geolocation=()",
         }
         if content_type.startswith("text/html"):
             headers["Content-Security-Policy"] = (
@@ -258,14 +259,23 @@ class TogetherRoomServer:
             return False
         if origin_value == request_value:
             return True
-        public_base = str(getattr(self.plugin, "public_base_url", "") or "").strip()
-        if public_base:
+        quick_tunnel = getattr(self.plugin, "quick_tunnel", None)
+        allowed_bases = (
+            str(getattr(self.plugin, "public_base_url", "") or "").strip(),
+            str(getattr(quick_tunnel, "url", "") or "").strip()
+            if bool(getattr(quick_tunnel, "running", False))
+            else "",
+        )
+        for public_base in allowed_bases:
+            if not public_base:
+                continue
             try:
                 public = urlsplit(public_base)
                 public_origin = f"{public.scheme.lower()}://{public.netloc.lower()}"
-                return bool(public.scheme and public.netloc and origin_value == public_origin)
+                if public.scheme and public.netloc and origin_value == public_origin:
+                    return True
             except Exception:
-                return False
+                continue
         return False
 
     async def _serve_websocket(self, request):

@@ -18,7 +18,14 @@
     recognitionRunning: false,
     recognitionRestartTimer: 0,
     recognitionFailCount: 0,
+    browserRecognitionUnavailable: false,
+    sttFallbackPending: false,
     mediaStream: null,
+    cameraStream: null,
+    cameraEnabled: false,
+    cameraFrameTimer: 0,
+    cameraCaptureBusy: false,
+    inviteRequestPending: false,
     recorder: null,
     recording: false,
     botSpeaking: false,
@@ -246,13 +253,16 @@
 
   function ticketFromLocation() {
     const params = new URLSearchParams(window.location.search);
-    const fromUrl = params.get("ticket") || "";
+    const pathMatch = window.location.pathname.match(/^\/join\/([A-Za-z0-9_-]{16,128})\/?$/);
+    const fromPath = pathMatch ? pathMatch[1] : "";
+    const fromQuery = params.get("ticket") || "";
+    const fromUrl = fromPath || fromQuery;
     if (fromUrl) sessionStorage.setItem("together_room_ticket", fromUrl);
     const mode = params.get("mode");
     if (mode === "watch" || mode === "call") state.mode = mode;
     if (fromUrl) {
       params.delete("ticket");
-      const clean = `${window.location.pathname}${params.toString() ? `?${params}` : ""}`;
+      const clean = `/${params.toString() ? `?${params}` : ""}`;
       window.history.replaceState({}, "", clean);
     }
     return fromUrl || sessionStorage.getItem("together_room_ticket") || "";
@@ -263,7 +273,7 @@
     const resumeToken = state.resumeToken || sessionStorage.getItem("together_resume_token") || "";
     if (!resumeToken && !ticket) {
       setConnection("房间链接缺少凭证", false);
-      showToast("请从插件拓展页或 QQ 指令重新打开房间", 5000);
+      showToast("请使用拓展页、QQ 消息或房间内生成的完整邀请链接", 5000);
       return;
     }
     const scheme = window.location.protocol === "https:" ? "wss" : "ws";
@@ -284,6 +294,8 @@
       window.clearInterval(state.pingTimer);
       const wasConnected = state.connected;
       state.connected = false;
+      state.inviteRequestPending = false;
+      $("#inviteButton").disabled = true;
       if (!wasConnected) {
         // 握手失败：resume 凭证可能已失效，清除后回退票据重试
         if (state.resumeToken || sessionStorage.getItem("together_resume_token")) {
@@ -356,6 +368,7 @@
         state.connected = true;
         state.reconnectAttempts = 0;
         state.room = message.room || {};
+        $("#inviteButton").disabled = false;
         if (message.resume_token) {
           state.resumeToken = message.resume_token;
           sessionStorage.setItem("together_resume_token", message.resume_token);
@@ -369,6 +382,12 @@
             state.socket.send(JSON.stringify({ type: "ping" }));
           }
         }, 45000);
+        break;
+      case "invite_link":
+        state.inviteRequestPending = false;
+        $("#inviteButton").disabled = false;
+        $("#inviteUrl").value = String(message.url || "");
+        if (!$("#inviteDialog").open) $("#inviteDialog").showModal();
         break;
       case "status":
         if (state.botSpeaking && message.state !== "speaking") break;
@@ -460,6 +479,8 @@
     $("#callName").textContent = botName;
     $("#brandAvatar").src = room.avatar_url || "/avatar";
     $("#callAvatar").src = room.avatar_url || "/avatar";
+    $("#cameraBotAvatar").src = room.avatar_url || "/avatar";
+    $("#cameraBotName").textContent = botName;
     $("#fullscreenAvatar").src = room.avatar_url || "/avatar";
     state.sttMode = room.stt?.mode || "auto";
     setActiveSttButton(state.sttMode);
@@ -478,8 +499,36 @@
     astrbotButton.disabled = !room.stt?.server_available;
     astrbotButton.title = room.stt?.server_available ? "使用 AstrBot STT Provider" : "AstrBot 尚未配置 STT Provider";
     $("#autoComment").checked = Boolean(room.watch?.auto_comment);
+    updateCameraButton();
     setMode(state.mode || room.mode || "call");
     resetSceneMonitor();
+  }
+
+  function requestInviteLink() {
+    if (!state.connected || state.inviteRequestPending) return;
+    state.inviteRequestPending = true;
+    $("#inviteButton").disabled = true;
+    if (!send({ type: "create_invite" })) {
+      state.inviteRequestPending = false;
+      $("#inviteButton").disabled = false;
+    }
+  }
+
+  async function copyInviteLink() {
+    const input = $("#inviteUrl");
+    const value = input.value.trim();
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+    } catch {
+      input.focus();
+      input.select();
+      if (!document.execCommand("copy")) {
+        showToast("复制失败，请手动选择链接");
+        return;
+      }
+    }
+    showToast("邀请链接已复制");
   }
 
   function setMode(mode, notify = true) {
@@ -545,9 +594,11 @@
   }
 
   function resolvedSttMode() {
-    if (state.sttMode === "browser") return "browser";
+    if (state.sttMode === "browser") {
+      return SpeechRecognition && !state.browserRecognitionUnavailable ? "browser" : "none";
+    }
     if (state.sttMode === "astrbot") return "astrbot";
-    if (SpeechRecognition) return "browser";
+    if (SpeechRecognition && !state.browserRecognitionUnavailable) return "browser";
     return state.room?.stt?.server_available ? "astrbot" : "none";
   }
 
@@ -558,10 +609,6 @@
   async function startCall() {
     if (!state.connected || state.callActive) return;
     const mode = resolvedSttMode();
-    if (mode === "none") {
-      showToast("当前浏览器不支持语音识别，且 AstrBot STT 未配置");
-      return;
-    }
     if (mode === "astrbot" && !state.room?.stt?.server_available) {
       showToast("AstrBot STT 尚未配置，请切换浏览器识别");
       return;
@@ -570,7 +617,7 @@
       if (mode === "browser") {
         await requestMicrophonePermission();
         createRecognition();
-      } else {
+      } else if (mode === "astrbot") {
         state.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       }
     } catch (error) {
@@ -584,11 +631,13 @@
     $("#callToggle").setAttribute("aria-label", "挂断");
     $("#callToggle").innerHTML = '<i data-lucide="phone-off"></i>';
     const pushMode = mode === "astrbot";
+    updateCameraButton();
     $("#holdToTalk").hidden = !pushMode;
     $("#holdHint").hidden = !pushMode;
     icons();
-    setRoomStatus("listening", pushMode ? "等待你按住麦克风" : "正在听");
+    setRoomStatus("listening", pushMode ? "等待你按住麦克风" : (mode === "none" ? "文字通话已接通" : "正在听"));
     if (mode === "browser") startRecognition();
+    if (mode === "none") showToast("语音识别不可用，仍可使用文字和摄像头通话", 4200);
     scheduleCallIdleTimer();
   }
 
@@ -605,6 +654,7 @@
     stopRecording(true);
     if (state.mediaStream) state.mediaStream.getTracks().forEach((track) => track.stop());
     state.mediaStream = null;
+    stopCamera(false);
     const button = $("#callToggle");
     button.classList.remove("active");
     button.title = "开始通话";
@@ -612,6 +662,7 @@
     button.innerHTML = '<i data-lucide="phone"></i>';
     $("#holdToTalk").hidden = true;
     $("#holdHint").hidden = true;
+    updateCameraButton();
     setRoomStatus("idle", "等待接通");
     if (wasActive && state.connected) send({ type: "call_state", active: false });
     if (notify) send({ type: "interrupt" });
@@ -622,6 +673,106 @@
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("当前环境不支持麦克风访问");
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     stream.getTracks().forEach((track) => track.stop());
+  }
+
+  function cameraErrorMessage(error) {
+    if (!window.isSecureContext) return "摄像头需要 HTTPS 或本机安全环境";
+    if (error?.name === "NotAllowedError") return "摄像头权限被拒绝，请在浏览器地址栏中重新允许";
+    if (error?.name === "NotFoundError") return "没有检测到可用摄像头";
+    if (error?.name === "NotReadableError") return "摄像头正被其他应用占用";
+    return error?.message || "无法开启摄像头";
+  }
+
+  function updateCameraButton() {
+    const button = $("#cameraToggle");
+    const available = Boolean(state.room?.call?.camera_available);
+    button.disabled = !state.callActive || !available;
+    button.classList.toggle("camera-active", state.cameraEnabled);
+    button.title = !available
+      ? "需要支持图片输入的对话或视觉模型"
+      : (state.cameraEnabled ? "关闭摄像头" : "开启摄像头");
+    button.setAttribute("aria-label", button.title);
+    button.innerHTML = `<i data-lucide="${state.cameraEnabled ? "video-off" : "video"}"></i>`;
+    icons();
+  }
+
+  async function replaceCameraStream(videoConstraints = { facingMode: { ideal: "user" } }) {
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error("当前环境不支持摄像头访问");
+    const nextStream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        ...videoConstraints,
+      },
+    });
+    const video = $("#callCamera");
+    const previous = state.cameraStream;
+    video.srcObject = nextStream;
+    await video.play();
+    state.cameraStream = nextStream;
+    state.cameraEnabled = true;
+    previous?.getTracks().forEach((track) => track.stop());
+    const settings = nextStream.getVideoTracks()[0]?.getSettings?.() || {};
+    $("#cameraStage").classList.toggle("rear-camera", settings.facingMode === "environment");
+    $("#avatarStage").hidden = true;
+    $("#cameraStage").hidden = false;
+    const devices = await navigator.mediaDevices.enumerateDevices?.() || [];
+    $("#switchCamera").hidden = devices.filter((item) => item.kind === "videoinput").length < 2;
+    updateCameraButton();
+  }
+
+  async function startCamera() {
+    if (!state.callActive || state.cameraEnabled) return;
+    try {
+      await replaceCameraStream();
+      window.clearInterval(state.cameraFrameTimer);
+      state.cameraFrameTimer = window.setInterval(sendCameraFrame, 8000);
+      window.setTimeout(sendCameraFrame, 600);
+      showToast("摄像头已开启");
+    } catch (error) {
+      showToast(cameraErrorMessage(error), 4800);
+      stopCamera(false);
+    }
+  }
+
+  function stopCamera(notify = true) {
+    const wasEnabled = state.cameraEnabled;
+    window.clearInterval(state.cameraFrameTimer);
+    state.cameraFrameTimer = 0;
+    state.cameraStream?.getTracks().forEach((track) => track.stop());
+    state.cameraStream = null;
+    state.cameraEnabled = false;
+    const video = $("#callCamera");
+    if (video) video.srcObject = null;
+    $("#cameraStage").hidden = true;
+    $("#avatarStage").hidden = false;
+    $("#switchCamera").hidden = true;
+    updateCameraButton();
+    if (wasEnabled && state.connected) send({ type: "call_frame", active: false });
+    if (wasEnabled && notify) showToast("摄像头已关闭");
+  }
+
+  async function toggleCamera() {
+    if (!state.callActive) { showToast("请先接通通话"); return; }
+    if (!state.room?.call?.camera_available) { showToast("当前没有可用的视觉模型"); return; }
+    if (state.cameraEnabled) stopCamera();
+    else await startCamera();
+  }
+
+  async function switchCamera() {
+    if (!state.cameraEnabled || !navigator.mediaDevices?.enumerateDevices) return;
+    try {
+      const devices = (await navigator.mediaDevices.enumerateDevices()).filter((item) => item.kind === "videoinput");
+      const currentId = state.cameraStream?.getVideoTracks()[0]?.getSettings?.().deviceId || "";
+      const currentIndex = Math.max(0, devices.findIndex((item) => item.deviceId === currentId));
+      const next = devices[(currentIndex + 1) % devices.length];
+      if (!next || next.deviceId === currentId) { showToast("没有其他可切换的摄像头"); return; }
+      await replaceCameraStream({ deviceId: { exact: next.deviceId } });
+      await sendCameraFrame();
+    } catch (error) {
+      showToast(cameraErrorMessage(error), 4200);
+    }
   }
 
   function createRecognition() {
@@ -659,18 +810,69 @@
       }
     });
     recognition.addEventListener("error", (event) => {
+      if (["not-allowed", "service-not-allowed"].includes(event.error)) {
+        fallbackFromBrowserRecognition(event.error);
+        return;
+      }
       if (!["no-speech", "aborted"].includes(event.error)) {
         state.recognitionFailCount = Math.min(state.recognitionFailCount + 1, 5);
         // 持续失败时退避重启，toast 只报前两次避免刷屏
         if (state.recognitionFailCount <= 2) showToast(`浏览器语音识别：${event.error}`);
       }
-      if (["not-allowed", "service-not-allowed"].includes(event.error)) stopCall(false);
     });
     recognition.addEventListener("end", () => {
       state.recognitionRunning = false;
       scheduleRecognitionRestart();
     });
     state.recognition = recognition;
+  }
+
+  async function fallbackFromBrowserRecognition(reason = "not-allowed") {
+    if (!state.callActive || state.sttFallbackPending) return;
+    state.sttFallbackPending = true;
+    state.browserRecognitionUnavailable = true;
+    window.clearTimeout(state.recognitionRestartTimer);
+    const recognition = state.recognition;
+    state.recognition = null;
+    state.recognitionRunning = false;
+    state.sttMode = state.room?.stt?.server_available ? "astrbot" : "auto";
+    setActiveSttButton(state.sttMode);
+    if (recognition) {
+      try { recognition.abort(); } catch { /* noop */ }
+    }
+    if (state.room?.stt?.server_available) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (!state.callActive) {
+          stream.getTracks().forEach((track) => track.stop());
+          state.sttFallbackPending = false;
+          return;
+        }
+        state.mediaStream = stream;
+        $("#holdToTalk").hidden = false;
+        $("#holdHint").hidden = false;
+        setRoomStatus("listening", "等待你按住麦克风");
+        showToast("浏览器语音识别不可用，已切换到按住说话", 4600);
+        icons();
+        state.sttFallbackPending = false;
+        return;
+      } catch (error) {
+        state.mediaStream = null;
+        showToast(error?.message || "无法获得麦克风权限，仍可使用文字通话", 4800);
+      }
+    } else {
+      showToast(
+        reason === "service-not-allowed"
+          ? "浏览器语音服务不可用，仍可使用文字和摄像头通话"
+          : "浏览器语音识别被拒绝，仍可使用文字和摄像头通话",
+        4800,
+      );
+    }
+    $("#holdToTalk").hidden = true;
+    $("#holdHint").hidden = true;
+    setRoomStatus("listening", "文字通话已接通");
+    updateCameraButton();
+    state.sttFallbackPending = false;
   }
 
   function startRecognition() {
@@ -770,7 +972,8 @@
         // base64 膨胀 4/3 后需低于服务端 16MiB 消息上限，留足信封余量
         if (blob.size > 10 * 1024 * 1024) { showToast("这段语音太长，请分开说"); return; }
         const data = await blobToBase64(blob);
-        send({ type: "audio_utterance", mime: blob.type || "audio/webm", data });
+        const frame = await captureCameraFrameData();
+        send({ type: "audio_utterance", mime: blob.type || "audio/webm", data, frame });
       });
       state.recorder = recorder;
       state.recording = true;
@@ -806,7 +1009,9 @@
   async function sendUserText(text, source = "text", alternatives = []) {
     const value = String(text || "").trim();
     if (!value) return;
-    const frame = state.mode === "watch" ? await captureFrameData(720, .76) : "";
+    const frame = state.mode === "watch"
+      ? await captureFrameData(720, .76)
+      : (state.mode === "call" ? await captureCameraFrameData() : "");
     if (state.botSpeaking) stopAudio();
     noteCallActivity();
     if (send({ type: "user_text", text: value, source, alternatives, state: playerState(), frame })) {
@@ -1228,10 +1433,9 @@
     }
   }
 
-  function captureFrameData(maxWidth = 640, quality = .74) {
+  function captureVideoFrameData(video, maxWidth = 640, quality = .74) {
     // 异步 toBlob 编码，避免大图 toDataURL 阻塞主线程
     return new Promise((resolve) => {
-      const video = $("#watchVideo");
       if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) { resolve(""); return; }
       const canvas = $("#frameCanvas");
       const scale = Math.min(1, maxWidth / video.videoWidth);
@@ -1253,6 +1457,33 @@
         resolve("");
       }
     });
+  }
+
+  function captureFrameData(maxWidth = 640, quality = .74) {
+    return captureVideoFrameData($("#watchVideo"), maxWidth, quality);
+  }
+
+  async function captureCameraFrameData() {
+    if (!state.cameraEnabled || !state.cameraStream) return "";
+    return captureVideoFrameData($("#callCamera"), 640, .70);
+  }
+
+  async function sendCameraFrame() {
+    if (
+      !state.connected
+      || !state.callActive
+      || !state.cameraEnabled
+      || state.mode !== "call"
+      || document.visibilityState === "hidden"
+      || state.cameraCaptureBusy
+    ) return;
+    state.cameraCaptureBusy = true;
+    try {
+      const image = await captureCameraFrameData();
+      if (image) send({ type: "call_frame", active: true, image });
+    } finally {
+      state.cameraCaptureBusy = false;
+    }
   }
 
   async function captureAndSendFrame(trigger = "heartbeat", sceneScore = 0) {
@@ -1296,15 +1527,20 @@
   function bindEvents() {
     $$("[data-mode-tab]").forEach((button) => button.addEventListener("click", () => setMode(button.dataset.modeTab)));
     $("#settingsButton").addEventListener("click", () => setSettingsOpen($("#settingsPanel").hidden));
+    $("#inviteButton").addEventListener("click", requestInviteLink);
+    $("#copyInviteLink").addEventListener("click", copyInviteLink);
     $("#closeSettings").addEventListener("click", () => setSettingsOpen(false, true));
     $$("[data-stt-mode]").forEach((button) => button.addEventListener("click", () => {
       const wasActive = state.callActive;
       if (wasActive) stopCall(true);
       state.sttMode = button.dataset.sttMode;
+      if (["auto", "browser"].includes(state.sttMode)) state.browserRecognitionUnavailable = false;
       setActiveSttButton(state.sttMode);
       if (wasActive) startCall();
     }));
     $("#callToggle").addEventListener("click", () => state.callActive ? stopCall(true) : startCall());
+    $("#cameraToggle").addEventListener("click", toggleCamera);
+    $("#switchCamera").addEventListener("click", switchCamera);
     $("#interruptButton").addEventListener("click", () => { send({ type: "interrupt" }); stopAudio(); });
     $("#toggleFullscreen").addEventListener("click", toggleWatchFullscreen);
     const onFullscreenChange = () => {

@@ -334,6 +334,61 @@ input:focus-visible, select:focus-visible {
   white-space: nowrap;
 }
 
+.tunnel-panel {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  margin-top: 18px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+}
+
+.tunnel-icon {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  color: var(--blue-strong);
+  background: var(--blue-soft);
+}
+
+.tunnel-icon svg { width: 21px; height: 21px; }
+.tunnel-copy { min-width: 0; display: grid; gap: 3px; }
+.tunnel-copy strong { font-size: 13px; }
+.tunnel-copy span { color: var(--muted); font-size: 12px; }
+.tunnel-copy code {
+  overflow: hidden;
+  color: var(--green-strong);
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tunnel-button {
+  min-width: 142px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 14px;
+  border: 1px solid color-mix(in srgb, var(--blue) 38%, var(--line));
+  border-radius: 12px;
+  color: var(--blue-strong);
+  background: var(--blue-soft);
+  cursor: pointer;
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.tunnel-button:hover:not(:disabled) { transform: translateY(-1px); border-color: var(--blue); }
+.tunnel-button[data-running="true"] { color: var(--coral-strong); background: var(--coral-soft); border-color: color-mix(in srgb, var(--coral) 38%, var(--line)); }
+.tunnel-button:disabled { opacity: .5; cursor: not-allowed; }
+.tunnel-button svg { width: 17px; height: 17px; }
+
 /* ---------- 房间链接 ---------- */
 
 .link-result {
@@ -597,6 +652,8 @@ input[type="range"] {
   .launch-grid { grid-template-columns: 1fr; }
   .launch-action { min-height: 150px; padding: 24px 22px; }
   .provider-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tunnel-panel { grid-template-columns: 44px minmax(0, 1fr); }
+  .tunnel-button { grid-column: 1 / -1; width: 100%; }
   .config-section { padding: 20px 18px; }
   .field-grid { grid-template-columns: 1fr; }
   .config-tabs { overflow-x: auto; }

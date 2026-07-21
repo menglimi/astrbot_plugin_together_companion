@@ -11,8 +11,12 @@
   const configForm = document.getElementById("configForm");
   const configState = document.getElementById("configState");
   const saveConfigButton = document.getElementById("saveConfig");
+  const tunnelToggle = document.getElementById("tunnelToggle");
+  const tunnelStatus = document.getElementById("tunnelStatus");
+  const tunnelUrl = document.getElementById("tunnelUrl");
   let configBaseline = "";
   let toastTimer = 0;
+  let tunnelPollTimer = 0;
 
   function icons() {
     if (window.lucide?.createIcons) window.lucide.createIcons();
@@ -54,17 +58,63 @@
     node.textContent = capability?.available ? (capability.label || "可用") : fallback;
   }
 
+  function setTunnelButton(icon, label, { running = false, disabled = false } = {}) {
+    tunnelToggle.dataset.running = String(running);
+    tunnelToggle.disabled = disabled;
+    tunnelToggle.innerHTML = `<i data-lucide="${icon}"></i><span>${label}</span>`;
+    icons();
+  }
+
+  function applyTunnelStatus(tunnel = {}) {
+    window.clearTimeout(tunnelPollTimer);
+    const fixedUrl = String(tunnel.fixed_public_url || "").trim();
+    const quickUrl = String(tunnel.url || "").trim();
+    if (fixedUrl) {
+      tunnelStatus.textContent = "固定公网地址已生效";
+      tunnelUrl.textContent = fixedUrl;
+      tunnelUrl.hidden = false;
+      setTunnelButton("badge-check", "无需临时穿透", { disabled: true });
+      return;
+    }
+    if (tunnel.running && quickUrl) {
+      tunnelStatus.textContent = tunnel.ready
+        ? "临时公网访问已生效，新房间链接将使用此地址"
+        : (tunnel.error || "临时地址已分配，正在等待公网生效…");
+      tunnelUrl.textContent = quickUrl;
+      tunnelUrl.hidden = false;
+      setTunnelButton("unplug", "停止公网访问", { running: true });
+      if (!tunnel.ready) {
+        tunnelPollTimer = window.setTimeout(loadStatus, 1800);
+      }
+      return;
+    }
+    tunnelUrl.textContent = "";
+    tunnelUrl.hidden = true;
+    if (tunnel.installed) {
+      tunnelStatus.textContent = tunnel.error || "按需生成临时 HTTPS 地址，适合手机访问";
+      setTunnelButton("radio", "启动临时穿透");
+    } else {
+      tunnelStatus.textContent = "未检测到 cloudflared，请先安装客户端";
+      setTunnelButton("circle-alert", "缺少 cloudflared", { disabled: true });
+    }
+  }
+
   async function loadStatus() {
     try {
       const data = await requestEndpoint("GET", "status");
       const running = Boolean(data?.running);
-      badgeNode.textContent = running ? "可进入" : "未启动";
-      badgeNode.className = `presence ${running ? "online" : "offline"}`;
-      statusNode.textContent = running ? `房间服务运行于 ${data.base_url}` : "房间服务当前不可用";
-      setProvider("chatProvider", data?.capabilities?.chat, "未配置");
+      const chatReady = Boolean(data?.capabilities?.chat?.available);
+      const ready = running && chatReady;
+      badgeNode.textContent = ready ? "可进入" : (running ? "待配置" : "未启动");
+      badgeNode.className = `presence ${ready ? "online" : "offline"}`;
+      statusNode.textContent = !running
+        ? "房间服务当前不可用"
+        : (chatReady ? `房间服务运行于 ${data.base_url}` : "请先选择通话与观影对话模型");
+      setProvider("chatProvider", data?.capabilities?.chat, "未配置（必选）");
       setProvider("visionProvider", data?.capabilities?.vision, "未配置");
       setProvider("sttProvider", data?.capabilities?.stt, "浏览器回退");
       setProvider("ttsProvider", data?.capabilities?.tts, "浏览器回退");
+      applyTunnelStatus(data?.tunnel || {});
       document.getElementById("watchCapability").textContent = data?.capabilities?.vision?.available
         ? `画面理解：${data.capabilities.vision.label || "可用"}`
         : "需配置支持图片的视觉模型";
@@ -74,7 +124,7 @@
       if (!data?.capabilities?.stt?.available) {
         document.getElementById("sttProvider").textContent = SpeechRecognition ? "浏览器免配置" : "未配置";
       }
-      document.querySelectorAll("[data-mode]").forEach((button) => { button.disabled = !running; });
+      document.querySelectorAll("[data-mode]").forEach((button) => { button.disabled = !ready; });
     } catch (error) {
       badgeNode.textContent = "连接失败";
       badgeNode.className = "presence offline";
@@ -140,8 +190,8 @@
 
   function fillProviderSelect(select, items, selectedValue) {
     const labels = {
-      chat: "跟随 AstrBot 默认模型",
-      vision: "自动选择视觉模型",
+      chat: "请选择对话模型（必选）",
+      vision: "可选：复用多模态对话模型或自动视觉模型",
       stt: "跟随 AstrBot 默认 STT",
       tts: "跟随 AstrBot 默认 TTS",
     };
@@ -149,6 +199,7 @@
     const fallback = document.createElement("option");
     fallback.value = "";
     fallback.textContent = labels[select.dataset.providerKind] || "跟随 AstrBot 默认";
+    fallback.disabled = select.dataset.providerKind === "chat";
     select.appendChild(fallback);
     (Array.isArray(items) ? items : []).forEach((item) => {
       const option = document.createElement("option");
@@ -209,6 +260,26 @@
     }
   }
 
+  async function toggleTunnel() {
+    const stopping = tunnelToggle.dataset.running === "true";
+    tunnelToggle.disabled = true;
+    tunnelStatus.textContent = stopping ? "正在停止临时公网访问" : "正在建立临时 HTTPS 通道";
+    setTunnelButton(stopping ? "loader-circle" : "loader-circle", stopping ? "正在停止" : "正在启动", {
+      running: stopping,
+      disabled: true,
+    });
+    try {
+      const data = await requestEndpoint("POST", stopping ? "tunnel/stop" : "tunnel/start");
+      await loadStatus();
+      showToast(stopping
+        ? "临时公网访问已停止"
+        : (data?.tunnel?.ready ? "临时公网访问已生效" : "临时地址已创建，正在等待公网生效"));
+    } catch (error) {
+      showToast(error?.message || "临时公网访问操作失败");
+      await loadStatus();
+    }
+  }
+
   async function launch(mode, button) {
     button.disabled = true;
     try {
@@ -252,6 +323,7 @@
     button.addEventListener("click", () => launch(button.dataset.mode, button));
   });
   document.getElementById("copyRoomUrl").addEventListener("click", () => copyUrl());
+  tunnelToggle.addEventListener("click", toggleTunnel);
   document.querySelectorAll("[data-config-tab]").forEach((button) => {
     button.addEventListener("click", () => selectConfigTab(button.dataset.configTab));
     button.addEventListener("keydown", (event) => {

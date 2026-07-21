@@ -47,6 +47,18 @@
       <span><i data-lucide="volume-2"></i><b>TTS</b><em id="ttsProvider">未检查</em></span>
     </section>
 
+    <section class="tunnel-panel" aria-labelledby="tunnelTitle">
+      <span class="tunnel-icon" aria-hidden="true"><i data-lucide="radio-tower"></i></span>
+      <div class="tunnel-copy">
+        <strong id="tunnelTitle">手机公网访问</strong>
+        <span id="tunnelStatus" aria-live="polite">正在检查穿透能力</span>
+        <code id="tunnelUrl" hidden></code>
+      </div>
+      <button id="tunnelToggle" class="tunnel-button" type="button" disabled>
+        <i data-lucide="radio"></i><span>启动临时穿透</span>
+      </button>
+    </section>
+
     <section class="link-result" id="linkResult" hidden aria-live="polite">
       <label for="roomUrl">房间链接</label>
       <div>
@@ -78,8 +90,8 @@
 
         <div class="config-view is-active" id="configVoice" role="tabpanel" data-config-view="voice">
           <div class="field-grid">
-            <label class="field"><span>通话模型</span><select name="conversation.chat_provider_id" data-provider-kind="chat"></select></label>
-            <label class="field"><span>观影视觉模型</span><select name="conversation.vision_provider_id" data-provider-kind="vision"></select></label>
+            <label class="field"><span>通话与观影对话模型</span><select name="conversation.chat_provider_id" data-provider-kind="chat" required></select></label>
+            <label class="field"><span>视觉模型（可选）</span><select name="conversation.vision_provider_id" data-provider-kind="vision"></select></label>
             <label class="field"><span>STT Provider</span><select name="speech.stt_provider_id" data-provider-kind="stt"></select></label>
             <label class="field"><span>TTS Provider</span><select name="speech.tts_provider_id" data-provider-kind="tts"></select></label>
             <label class="field"><span>浏览器识别语言</span><input name="speech.browser_language" type="text" maxlength="20" autocomplete="off" /></label>

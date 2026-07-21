@@ -13,8 +13,9 @@ from astrbot_plugin_together_companion.models import RoomSession
 
 
 class _ConversationManager:
-    def __init__(self, current_id: str = "") -> None:
+    def __init__(self, current_id: str = "", history=None) -> None:
         self.current_id = current_id
+        self.history = history or []
         self.created = []
         self.pairs = []
 
@@ -23,7 +24,7 @@ class _ConversationManager:
 
     async def get_conversation(self, unified_origin: str, conversation_id: str):
         if unified_origin == "default:FriendMessage:995051631" and conversation_id == self.current_id:
-            return SimpleNamespace(cid=conversation_id)
+            return SimpleNamespace(cid=conversation_id, history=self.history)
         return None
 
     async def new_conversation(self, unified_origin: str, platform_id: str, **kwargs):
@@ -68,6 +69,32 @@ class ConversationRecordingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("default", manager.created[0][1])
         self.assertEqual("一起房间", manager.created[0][2]["title"])
         self.assertEqual("created-conversation", manager.pairs[0][0])
+
+    async def test_existing_astrbot_history_is_loaded_into_new_room(self) -> None:
+        manager = _ConversationManager(
+            "existing-conversation",
+            history=[
+                {"role": "system", "content": "internal"},
+                {"role": "user", "content": "之前我们聊到海边"},
+                {"role": "assistant", "content": "我记得那片海很安静"},
+                {"role": "tool", "content": "不要注入工具消息"},
+            ],
+        )
+        plugin = self._plugin(manager)
+        plugin.sync_astrbot_conversation = True
+        plugin.history_turns = 12
+        plugin._astrbot_conversation_platform_ids = lambda: ["default"]
+        room = RoomSession("room", "ticket", "call", "995051631", None)
+
+        await plugin._prime_astrbot_room_history(room)
+
+        self.assertEqual(
+            [
+                {"role": "user", "content": "之前我们聊到海边"},
+                {"role": "assistant", "content": "我记得那片海很安静"},
+            ],
+            room.history,
+        )
 
 
 if __name__ == "__main__":

@@ -26,6 +26,12 @@ class RoomOriginTests(unittest.TestCase):
         request = self._request("http://127.0.0.1:6321")
         self.assertTrue(self._server()._origin_allowed(request))
 
+    def test_room_permissions_allow_same_origin_camera_and_microphone(self) -> None:
+        policy = self._server()._security_headers()["Permissions-Policy"]
+
+        self.assertIn("camera=(self)", policy)
+        self.assertIn("microphone=(self)", policy)
+
     def test_different_local_origin_is_rejected(self) -> None:
         request = self._request("http://localhost:9000")
         self.assertFalse(self._server()._origin_allowed(request))
@@ -44,6 +50,25 @@ class RoomOriginTests(unittest.TestCase):
         request = self._request("https://together.example.com:8443")
         self.assertFalse(
             self._server("https://together.example.com")._origin_allowed(request)
+        )
+
+    def test_running_quick_tunnel_origin_is_allowed_exactly(self) -> None:
+        server = self._server()
+        server.plugin.quick_tunnel = SimpleNamespace(
+            running=True,
+            url="https://quiet-river.trycloudflare.com",
+        )
+        request = self._request(
+            "https://quiet-river.trycloudflare.com",
+            scheme="http",
+            host="quiet-river.trycloudflare.com",
+        )
+
+        self.assertTrue(server._origin_allowed(request))
+        self.assertFalse(
+            server._origin_allowed(
+                self._request("https://other.trycloudflare.com", scheme="http", host=request.host)
+            )
         )
 
 

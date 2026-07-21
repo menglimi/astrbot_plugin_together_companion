@@ -53,6 +53,22 @@ class CallProactiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(room.call_active)
         self.assertGreaterEqual(room.call_last_user_activity, before)
 
+    async def test_camera_frame_is_transient_and_cleared_on_hangup(self) -> None:
+        plugin = TogetherCompanionPlugin.__new__(TogetherCompanionPlugin)
+        room = RoomSession("room", "ticket", "call", "995051631", None)
+
+        await plugin.handle_room_payload(room, {"type": "call_state", "active": True})
+        await plugin.handle_room_payload(
+            room,
+            {"type": "call_frame", "active": True, "image": "data:image/jpeg;base64,/9g="},
+        )
+
+        self.assertEqual("data:image/jpeg;base64,/9g=", room.recent_call_camera_frame())
+
+        await plugin.handle_room_payload(room, {"type": "call_state", "active": False})
+        self.assertEqual("", room.call_camera_frame)
+        self.assertEqual(0.0, room.call_camera_updated_at)
+
     async def test_model_can_choose_to_remain_silent(self) -> None:
         plugin = TogetherCompanionPlugin.__new__(TogetherCompanionPlugin)
         plugin.history_turns = 6

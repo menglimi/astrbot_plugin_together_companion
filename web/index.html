@@ -22,9 +22,14 @@
       <button type="button" data-mode-tab="watch"><i data-lucide="play"></i><span>一起看</span></button>
     </nav>
 
-    <button id="settingsButton" class="icon-button" type="button" title="语音设置" aria-label="语音设置" aria-expanded="false" aria-controls="settingsPanel">
-      <i data-lucide="settings-2"></i>
-    </button>
+    <div class="top-actions">
+      <button id="inviteButton" class="icon-button" type="button" title="生成邀请链接" aria-label="生成邀请链接" disabled>
+        <i data-lucide="user-plus"></i>
+      </button>
+      <button id="settingsButton" class="icon-button" type="button" title="语音设置" aria-label="语音设置" aria-expanded="false" aria-controls="settingsPanel">
+        <i data-lucide="settings-2"></i>
+      </button>
+    </div>
   </header>
 
   <aside class="settings-panel" id="settingsPanel" hidden>
@@ -49,10 +54,23 @@
   <main class="app-shell">
     <section class="view call-view active" id="callView" aria-label="电话房间">
       <div class="call-presence">
-        <div class="avatar-stage" id="avatarStage" data-state="idle">
-          <img id="callAvatar" src="/avatar" alt="Bot 头像" />
-          <div class="voice-bars" aria-hidden="true">
-            <i></i><i></i><i></i><i></i><i></i>
+        <div class="call-visual-stage">
+          <div class="avatar-stage" id="avatarStage" data-state="idle">
+            <img id="callAvatar" src="/avatar" alt="Bot 头像" />
+            <div class="voice-bars" aria-hidden="true">
+              <i></i><i></i><i></i><i></i><i></i>
+            </div>
+          </div>
+          <div class="camera-stage" id="cameraStage" hidden>
+            <video id="callCamera" autoplay muted playsinline aria-label="本机摄像头预览"></video>
+            <span class="camera-live"><i data-lucide="video"></i>镜头开启</span>
+            <button id="switchCamera" class="camera-action" type="button" title="切换摄像头" aria-label="切换摄像头" hidden>
+              <i data-lucide="switch-camera"></i>
+            </button>
+            <div class="camera-companion" aria-label="通话中的 Bot">
+              <img id="cameraBotAvatar" src="/avatar" alt="" />
+              <span id="cameraBotName">Bot</span>
+            </div>
           </div>
         </div>
         <h1 id="callName">Bot</h1>
@@ -62,6 +80,9 @@
       <div class="transcript" id="callTranscript" aria-live="polite"></div>
 
       <div class="call-controls">
+        <button id="cameraToggle" class="round-control secondary" type="button" title="开启摄像头" aria-label="开启摄像头" disabled>
+          <i data-lucide="video"></i>
+        </button>
         <button id="holdToTalk" class="round-control secondary" type="button" title="按住说话" aria-label="按住说话" hidden>
           <i data-lucide="mic"></i>
         </button>
@@ -174,6 +195,23 @@
       <footer>
         <button class="text-button" value="cancel" type="submit">取消</button>
         <button class="text-button primary-text" id="confirmVideoUrl" value="default" type="submit">打开</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="inviteDialog">
+    <form method="dialog">
+      <header>
+        <strong>邀请链接</strong>
+        <button class="icon-button compact" value="cancel" type="submit" title="关闭" aria-label="关闭"><i data-lucide="x"></i></button>
+      </header>
+      <label for="inviteUrl">一次性房间链接</label>
+      <div class="invite-link-row">
+        <input id="inviteUrl" type="text" readonly aria-label="一次性房间邀请链接" />
+        <button id="copyInviteLink" class="text-button primary-text" type="button"><i data-lucide="copy"></i><span>复制</span></button>
+      </div>
+      <footer>
+        <button class="text-button" value="cancel" type="submit">完成</button>
       </footer>
     </form>
   </dialog>

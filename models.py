@@ -108,6 +108,8 @@ class RoomSession:
     call_active: bool = False
     call_last_user_activity: float = 0.0
     call_last_proactive_at: float = 0.0
+    call_camera_frame: str = ""
+    call_camera_updated_at: float = 0.0
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     conversation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     astrbot_unified_msg_origin: str = ""
@@ -136,6 +138,16 @@ class RoomSession:
             return False
         task.cancel()
         return True
+
+    def update_call_camera(self, frame: str) -> None:
+        self.call_camera_frame = str(frame or "")
+        self.call_camera_updated_at = time.monotonic() if self.call_camera_frame else 0.0
+
+    def recent_call_camera_frame(self, *, max_age_seconds: float = 25.0) -> str:
+        if not self.call_active or self.mode != "call" or not self.call_camera_frame:
+            return ""
+        age = time.monotonic() - float(self.call_camera_updated_at or 0.0)
+        return self.call_camera_frame if age <= max(1.0, float(max_age_seconds)) else ""
 
     def append_watch_event(
         self,
