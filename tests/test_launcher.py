@@ -45,6 +45,12 @@ class LauncherTests(unittest.TestCase):
         self.assertIn('name="watch.comment_interval_seconds"', page)
         self.assertIn('name="speech.realtime_duplex_enabled"', page)
         self.assertIn('name="speech.tts_timeout_seconds"', page)
+        self.assertIn(
+            'name="speech.tts_volume_percent" type="range" min="0" max="100" step="5" value="100"',
+            page,
+        )
+        self.assertIn('data-output-for="speech.tts_volume_percent"', page)
+        self.assertIn('"speech.tts_volume_percent": "%"', script)
         self.assertIn('role="switch"', page)
         self.assertIn('requestEndpoint("POST", "config/save"', script)
         self.assertNotIn('name="server.host"', page)
@@ -405,6 +411,7 @@ class PageConfigApiTests(unittest.IsolatedAsyncioTestCase):
                     "conversation.history_turns": 8,
                     "speech.stt_mode": "browser",
                     "speech.tts_timeout_seconds": 75,
+                    "speech.tts_volume_percent": 65,
                     "speech.realtime_duplex_enabled": True,
                     "watch.comment_interval_seconds": 90,
                     "watch.scene_min_interval_seconds": 25,
@@ -430,6 +437,7 @@ class PageConfigApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(8, plugin.history_turns)
         self.assertEqual("browser", plugin.stt_mode)
         self.assertEqual(75, plugin.tts_timeout_seconds)
+        self.assertEqual(0.65, plugin.tts_volume_ratio)
         self.assertTrue(plugin.realtime_duplex_enabled)
         self.assertEqual(90, plugin.watch_comment_interval_seconds)
         self.assertEqual(25, plugin.watch_scene_min_interval_seconds)
@@ -462,6 +470,7 @@ class PageConfigApiTests(unittest.IsolatedAsyncioTestCase):
                 "watch.memory_refresh_seconds": 1,
                 "speech.stt_mode": "unexpected",
                 "speech.tts_timeout_seconds": 999,
+                "speech.tts_volume_percent": 999,
                 "speech.realtime_duplex_enabled": "true",
                 "unknown.key": "ignored",
             }
@@ -472,8 +481,12 @@ class PageConfigApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(90, updates["watch.memory_refresh_seconds"])
         self.assertEqual("auto", updates["speech.stt_mode"])
         self.assertEqual(180, updates["speech.tts_timeout_seconds"])
+        self.assertEqual(100, updates["speech.tts_volume_percent"])
         self.assertTrue(updates["speech.realtime_duplex_enabled"])
         self.assertNotIn("unknown.key", updates)
+
+        invalid_volume = plugin._validate_page_settings({"speech.tts_volume_percent": "loud"})
+        self.assertEqual(100, invalid_volume["speech.tts_volume_percent"])
 
 
 if __name__ == "__main__":

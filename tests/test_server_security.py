@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 import unittest
 
@@ -31,6 +32,15 @@ class RoomOriginTests(unittest.TestCase):
 
         self.assertIn("camera=(self)", policy)
         self.assertIn("microphone=(self)", policy)
+
+    def test_room_scripts_do_not_depend_on_external_cdn(self) -> None:
+        policy = self._server()._security_headers("text/html")["Content-Security-Policy"]
+        page = (Path(__file__).resolve().parents[1] / "web" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("script-src 'self'", policy)
+        self.assertNotIn("unpkg.com", policy)
+        self.assertIn('/assets/lucide.min.js', page)
+        self.assertNotIn("https://unpkg.com", page)
 
     def test_different_local_origin_is_rejected(self) -> None:
         request = self._request("http://localhost:9000")

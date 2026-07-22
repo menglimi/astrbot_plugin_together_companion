@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -416,6 +417,7 @@ class TogetherTtsBridgeTests(unittest.IsolatedAsyncioTestCase):
         plugin.browser_language = "zh-CN"
         plugin.browser_tts_fallback = True
         plugin.tts_timeout_seconds = 60
+        plugin.tts_volume_ratio = 0.65
         plugin.realtime_duplex_enabled = True
         plugin.watch_auto_comment = True
         plugin.watch_comment_interval_seconds = 30
@@ -429,6 +431,7 @@ class TogetherTtsBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("zh-CN", bootstrap["stt"]["browser_language"])
         self.assertEqual("ja-JP", bootstrap["tts"]["browser_language"])
         self.assertEqual(60, bootstrap["tts"]["timeout_seconds"])
+        self.assertEqual(0.65, bootstrap["tts"]["volume_ratio"])
         self.assertTrue(bootstrap["call"]["camera_available"])
         self.assertFalse(bootstrap["call"]["camera_vision_available"])
         self.assertTrue(bootstrap["call"]["realtime_duplex_enabled"])
@@ -438,9 +441,14 @@ class TogetherTtsBridgeTests(unittest.IsolatedAsyncioTestCase):
             Path(__file__).resolve().parents[1] / "web" / "app.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn(
-            "speakInBrowser(message.text, message.language, message.display_text, message.source)",
+        self.assertRegex(
             source,
+            re.compile(
+                r"speakInBrowser\(\s*message\.text,\s*message\.language,\s*"
+                r"message\.display_text,\s*message\.source,\s*"
+                r"message\.after_playback_action,\s*\)",
+                re.DOTALL,
+            ),
         )
         self.assertIn(
             'utterance.lang = language || state.room?.tts?.browser_language || "zh-CN";',
@@ -448,6 +456,49 @@ class TogetherTtsBridgeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn(
             'utterance.lang = state.room?.stt?.browser_language || "zh-CN";',
+            source,
+        )
+
+    async def test_text_only_fallback_never_arms_hangup(self) -> None:
+        provider = SimpleNamespace(get_audio=AsyncMock())
+        api = SimpleNamespace(
+            synthesize_realtime_voice=AsyncMock(
+                return_value={"audio_path": "", "fallback_text": "", "language": "ja-JP"}
+            )
+        )
+        plugin = self._plugin(provider, api)
+        room = RoomSession("room", "ticket", "call", "123", None)
+        room.call_active = True
+
+        queued = await plugin._synthesize_and_send(
+            room,
+            "晚安。",
+            display_text="晚安。",
+            after_playback_action="hangup",
+        )
+
+        payload = plugin.send_room_payload.await_args_list[-1].args[1]
+        self.assertFalse(queued)
+        self.assertEqual("bot_text", payload["type"])
+        self.assertNotIn("after_playback_action", payload)
+
+    def test_frontend_runs_hangup_only_after_successful_playback(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1] / "web" / "app.js"
+        ).read_text(encoding="utf-8")
+        bot_text_handler = source[source.index('case "bot_text":') : source.index('case "audio":')]
+        fallback_without_voice = source[
+            source.index("else {", source.index('case "tts_fallback":')) : source.index('case "stop_audio":')
+        ]
+
+        self.assertNotIn("runAfterPlaybackAction", bot_text_handler)
+        self.assertNotIn("runAfterPlaybackAction", fallback_without_voice)
+        self.assertIn(
+            "playbackCompleted && runAfterPlaybackAction(item?.after_playback_action)",
+            source,
+        )
+        self.assertIn(
+            "playbackCompleted && runAfterPlaybackAction(afterPlaybackAction)",
             source,
         )
 

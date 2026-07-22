@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
-VALID_ROOM_MODES = {"call", "watch"}
+VALID_ROOM_MODES = {"call", "watch", "work"}
 
 
 def normalize_room_mode(value: Any) -> str:
@@ -112,6 +112,9 @@ class RoomSession:
     call_last_proactive_at: float = 0.0
     call_camera_frame: str = ""
     call_camera_updated_at: float = 0.0
+    call_action_token: str = field(default_factory=lambda: secrets.token_urlsafe(18))
+    work_context: dict[str, Any] = field(default_factory=dict)
+    work_context_updated_at: float = 0.0
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     conversation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     astrbot_unified_msg_origin: str = ""

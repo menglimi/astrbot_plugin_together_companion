@@ -103,6 +103,12 @@
         "default": true,
         "hint": "语音通话持续安静一段时间后，由当前人格判断是否自然开口；用户正在说话、Bot 正在回应或没有合适话题时不会打扰。"
       },
+      "model_hangup_enabled": {
+        "description": "允许模型自然结束通话",
+        "type": "bool",
+        "default": true,
+        "hint": "模型可结合人格、关系与对话是否自然收束，自主在一句告别播放完成后结束当前语音连接；短暂沉默或没听清不会单独触发。"
+      },
       "call_idle_seconds": {
         "description": "主动找话题等待秒数",
         "type": "int",
@@ -195,6 +201,17 @@
           "step": 5
         },
         "hint": "包含陪伴插件语种转换和语音合成；超时后立即回退文字或浏览器朗读。"
+      },
+      "tts_volume_percent": {
+        "description": "TTS 播放音量百分比",
+        "type": "int",
+        "default": 100,
+        "range": {
+          "min": 0,
+          "max": 100,
+          "step": 5
+        },
+        "hint": "控制房间内 Bot 语音的默认播放音量，不影响影片原声音量或 TTS 合成内容；0 表示静音。"
       },
       "realtime_duplex_enabled": {
         "description": "实时流式语音与全双工（实验性）",

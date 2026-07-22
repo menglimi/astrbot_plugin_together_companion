@@ -25,7 +25,6 @@ except ImportError:  # pragma: no cover - reported clearly during plugin startup
 
 class TogetherRoomServer:
     MAX_WEBSOCKET_MESSAGE_BYTES = 16 * 1024 * 1024
-
     def __init__(self, plugin: Any, *, host: str, port: int, web_root: Path) -> None:
         self.plugin = plugin
         self.host = str(host or "127.0.0.1").strip() or "127.0.0.1"
@@ -128,7 +127,7 @@ class TogetherRoomServer:
         }
         if content_type.startswith("text/html"):
             headers["Content-Security-Policy"] = (
-                "default-src 'self'; script-src 'self' https://unpkg.com; "
+                "default-src 'self'; script-src 'self'; "
                 "style-src 'self'; img-src 'self' data: blob:; "
                 "media-src 'self' data: blob: https: http:; "
                 "connect-src 'self' ws: wss:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
@@ -145,7 +144,7 @@ class TogetherRoomServer:
         )
 
     async def _serve_asset(self, request):
-        allowed = {"app.css", "app.js"}
+        allowed = {"app.css", "app.js", "lucide.min.js"}
         name = str(request.match_info.get("name") or "")
         if name not in allowed:
             raise web.HTTPNotFound()

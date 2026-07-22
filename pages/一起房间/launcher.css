@@ -46,6 +46,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 
 html {
   min-height: 100%;
@@ -218,6 +219,7 @@ h2 { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: 0; }
 .launch-action.watch::before {
   background: linear-gradient(125deg, color-mix(in srgb, var(--blue) 14%, transparent) 0%, transparent 58%);
 }
+.launch-action.work::before { background: color-mix(in srgb, var(--green) 10%, transparent); }
 
 /* 角落光环 */
 .launch-action::after {
@@ -241,6 +243,7 @@ h2 { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: 0; }
 .launch-action:hover::after { transform: scale(1.12); }
 .launch-action.call:hover { border-color: color-mix(in srgb, var(--coral) 46%, var(--line)); }
 .launch-action.watch:hover { border-color: color-mix(in srgb, var(--blue) 46%, var(--line)); }
+.launch-action.work:hover { border-color: color-mix(in srgb, var(--green) 46%, var(--line)); }
 .launch-action:active { transform: translateY(-1px); }
 
 .launch-action:focus-visible, .icon-button:focus-visible, .save-button:focus-visible, .config-tabs button:focus-visible,
@@ -263,6 +266,7 @@ input:focus-visible, select:focus-visible {
 
 .launch-action.call .action-icon { color: var(--coral-strong); background: var(--coral-soft); }
 .launch-action.watch .action-icon { color: var(--blue-strong); background: var(--blue-soft); }
+.launch-action.work .action-icon { color: var(--green-strong); background: var(--green-soft); }
 
 .action-copy { min-width: 0; display: grid; gap: 8px; }
 .action-copy strong { font-size: 21px; font-weight: 800; letter-spacing: 0; }
@@ -609,6 +613,12 @@ input:focus-visible, select:focus-visible {
   gap: 22px;
 }
 
+.compact-range-setting {
+  min-height: 50px;
+  grid-template-columns: minmax(170px, .56fr) minmax(180px, 1fr);
+  gap: 16px;
+}
+
 .range-setting span { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 
 .range-setting output {
@@ -663,6 +673,7 @@ input[type="range"] {
   .mode-row { display: grid; }
   .segmented { width: 100%; grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .range-setting { grid-template-columns: 1fr; gap: 8px; padding: 12px 0 16px; }
+  .compact-range-setting { min-height: 0; }
 }
 
 @media (max-width: 420px) {

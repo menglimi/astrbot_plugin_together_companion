@@ -18,8 +18,9 @@
     </div>
 
     <nav class="mode-tabs" aria-label="共处模式">
-      <button type="button" data-mode-tab="call" class="active"><i data-lucide="phone"></i><span>电话</span></button>
-      <button type="button" data-mode-tab="watch"><i data-lucide="play"></i><span>一起看</span></button>
+      <button type="button" data-mode-tab="call" class="active" title="电话" aria-label="电话"><i data-lucide="phone"></i><span>电话</span></button>
+      <button type="button" data-mode-tab="watch" title="一起看" aria-label="一起看"><i data-lucide="play"></i><span>一起看</span></button>
+      <button type="button" data-mode-tab="work" title="工作协同" aria-label="工作协同" hidden><i data-lucide="briefcase-business"></i><span>协同</span></button>
     </nav>
 
     <div class="top-actions">
@@ -56,6 +57,13 @@
           <small>点击修改</small>
         </button>
       </div>
+    </div>
+    <div class="settings-field tts-volume-field">
+      <div class="settings-field-heading">
+        <label for="ttsVolume">TTS 音量</label>
+        <output id="ttsVolumeValue" for="ttsVolume">100%</output>
+      </div>
+      <input id="ttsVolume" type="range" min="0" max="100" step="5" value="100" aria-label="TTS 播放音量" />
     </div>
     <div class="settings-field camera-device-field">
       <label for="cameraDeviceSelect">摄像头</label>
@@ -120,6 +128,47 @@
         </button>
       </div>
       <span id="holdHint" class="hold-hint" hidden>按住空格或麦克风说话</span>
+    </section>
+
+    <section class="view work-view" id="workView" aria-label="工作协同房间">
+      <div class="work-overview">
+        <header class="work-heading">
+          <div class="work-title-row">
+            <span class="work-icon" aria-hidden="true"><i data-lucide="briefcase-business"></i></span>
+            <div>
+              <strong>工作协同</strong>
+              <span id="workStatus" aria-live="polite">等待连接屏幕伙伴</span>
+            </div>
+            <button id="refreshWorkContext" class="icon-button compact" type="button" title="刷新工作上下文" aria-label="刷新工作上下文">
+              <i data-lucide="refresh-cw"></i>
+            </button>
+          </div>
+          <p class="work-subtitle">当前上下文</p>
+        </header>
+        <dl class="work-context-list" aria-live="polite">
+          <div><dt>应用</dt><dd id="workApp">未读取</dd></div>
+          <div><dt>场景</dt><dd id="workScene">未读取</dd></div>
+          <div><dt>窗口</dt><dd id="workWindow">未读取</dd></div>
+          <div><dt>最近观察</dt><dd id="workObservation">暂无新观察</dd></div>
+        </dl>
+        <div class="work-presence">
+          <img id="workAvatar" src="/avatar" alt="" />
+          <div><strong id="workBotName">Bot</strong><span id="workVoiceStatus">文字协同已就绪</span></div>
+          <button id="workCallToggle" class="round-control primary" type="button" title="开始语音协同" aria-label="开始语音协同">
+            <i data-lucide="phone"></i>
+          </button>
+          <button id="workInterruptButton" class="icon-button" type="button" title="打断播放" aria-label="打断播放">
+            <i data-lucide="volume-x"></i>
+          </button>
+        </div>
+      </div>
+      <aside class="work-conversation">
+        <div class="work-conversation-heading">
+          <strong>协同记录</strong>
+          <span id="workConversationStatus">文字协同</span>
+        </div>
+        <div class="transcript" id="workTranscript" tabindex="0" aria-label="工作协同对话记录" aria-live="polite"></div>
+      </aside>
     </section>
 
     <section class="view watch-view" id="watchView" aria-label="共同观影房间">
@@ -250,7 +299,7 @@
   </dialog>
 
   <div class="toast" id="toast" hidden role="status"></div>
-  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+  <script src="/assets/lucide.min.js"></script>
   <script src="/assets/app.js"></script>
 </body>
 </html>

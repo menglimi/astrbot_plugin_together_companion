@@ -9,6 +9,7 @@
   const CAMERA_PREVIEW_FRAME_RATE = 30;
   const CAMERA_UPLOAD_MAX_WIDTH = 640;
   const CAMERA_UPLOAD_JPEG_QUALITY = .70;
+  const TTS_VOLUME_STORAGE_KEY = "together_tts_volume_percent";
 
   const state = {
     socket: null,
@@ -51,6 +52,7 @@
     audioQueue: [],
     currentAudio: null,
     currentAudioUrl: "",
+    ttsVolume: 1,
     browserUtterance: null,
     draftNode: null,
     cancellableUtterances: new Map(),
@@ -94,6 +96,7 @@
     videoRateHoldSource: null,
     videoRateBeforeHold: 1,
     videoSurfaceSuppressClick: false,
+    workContext: null,
   };
 
   function icons() {
@@ -132,6 +135,7 @@
   function setRoomStatus(status, text) {
     $("#callStatus").textContent = text || "";
     $("#watchStatus").textContent = text || "";
+    $("#workVoiceStatus").textContent = text || "";
     $("#avatarStage").dataset.state = status === "speaking" ? "speaking" : (state.callActive ? "listening" : "idle");
   }
 
@@ -286,7 +290,7 @@
     const fromUrl = fromPath || fromQuery;
     if (fromUrl) sessionStorage.setItem("together_room_ticket", fromUrl);
     const mode = params.get("mode");
-    if (mode === "watch" || mode === "call") state.mode = mode;
+    if (["watch", "call", "work"].includes(mode)) state.mode = mode;
     if (fromUrl) {
       params.delete("ticket");
       const clean = `/${params.toString() ? `?${params}` : ""}`;
@@ -411,6 +415,9 @@
           }
         }, 45000);
         break;
+      case "work_context":
+        applyWorkContext(message.context || {});
+        break;
       case "invite_link":
         state.inviteRequestPending = false;
         $("#inviteButton").disabled = false;
@@ -489,12 +496,19 @@
         clearCancellableUtterances();
         if (isDuplicateWatchSpeech(message)) break;
         if (state.room?.tts?.browser_fallback) {
-          speakInBrowser(message.text, message.language, message.display_text, message.source);
+          speakInBrowser(
+            message.text,
+            message.language,
+            message.display_text,
+            message.source,
+            message.after_playback_action,
+          );
         }
         else {
           revealSpeechMessage(message);
           markFullscreenSpeechStarted();
           markFullscreenSpeechFinished();
+          resumeRecognitionAfterBot();
         }
         break;
       case "stop_audio":
@@ -525,7 +539,14 @@
     $("#callAvatar").src = room.avatar_url || "/avatar";
     $("#cameraBotAvatar").src = room.avatar_url || "/avatar";
     $("#cameraBotName").textContent = botName;
+    $("#workAvatar").src = room.avatar_url || "/avatar";
+    $("#workBotName").textContent = botName;
     $("#fullscreenAvatar").src = room.avatar_url || "/avatar";
+    const workAvailable = room.work?.available === true;
+    const workTab = $('[data-mode-tab="work"]');
+    workTab.hidden = !workAvailable;
+    $(".mode-tabs").classList.toggle("has-work", workAvailable);
+    if (workAvailable) applyWorkContext(room.work?.context || {});
     state.sttMode = room.stt?.mode || "auto";
     setActiveSttButton(state.sttMode);
     $("#chatCapability").textContent = room.chat?.available ? (room.chat.label || "可用") : "未配置";
@@ -544,6 +565,7 @@
     astrbotButton.title = room.stt?.server_available ? "使用 AstrBot STT Provider" : "AstrBot 尚未配置 STT Provider";
     $("#autoComment").checked = Boolean(room.watch?.auto_comment);
     $("#watchTtsEnabled").checked = room.watch?.tts_enabled !== false;
+    loadTtsVolumePreference();
     loadTalkPreferences();
     updateTalkControls();
     loadRememberedCameraDevice();
@@ -551,6 +573,31 @@
     refreshCameraDevices().catch(() => {});
     setMode(state.mode || room.mode || "call");
     resetSceneMonitor();
+  }
+
+  function workAgeLabel(seconds) {
+    const age = Math.max(0, Number(seconds) || 0);
+    if (age < 15) return "刚刚更新";
+    if (age < 60) return `${Math.round(age)} 秒前`;
+    if (age < 3600) return `${Math.round(age / 60)} 分钟前`;
+    return "上下文较旧";
+  }
+
+  function applyWorkContext(context) {
+    const value = context && typeof context === "object" ? context : {};
+    const current = value.current && typeof value.current === "object" ? value.current : {};
+    const observation = value.observation && typeof value.observation === "object" ? value.observation : {};
+    state.workContext = value;
+    const available = value.context_available === true;
+    $("#workApp").textContent = current.app_name || current.resource_label || "未识别";
+    $("#workScene").textContent = current.scene || current.type || "未识别";
+    $("#workWindow").textContent = current.window || current.resource_label || "未读取";
+    $("#workObservation").textContent = observation.summary || "暂无新观察";
+    $("#workStatus").textContent = available
+      ? `${value.privacy_masked ? "脱敏上下文" : "当前上下文"} · ${workAgeLabel(observation.age_seconds)}`
+      : "屏幕伙伴已连接，等待可用上下文";
+    $("#workConversationStatus").textContent = value.tracking_enabled ? "上下文同步中" : "按需读取";
+    $("#refreshWorkContext").disabled = false;
   }
 
   function requestInviteLink() {
@@ -581,10 +628,14 @@
   }
 
   function setMode(mode, notify = true) {
-    const next = mode === "watch" ? "watch" : "call";
+    let next = ["call", "watch", "work"].includes(mode) ? mode : "call";
+    if (next === "work" && state.room?.work?.available !== true) {
+      if (notify) showToast("工作协同当前不可用");
+      next = "call";
+    }
     const previous = state.mode;
     if (previous !== next) clearCancellableUtterances();
-    if (previous !== next && next === "watch" && state.cameraEnabled) stopCamera(false);
+    if (previous !== next && next !== "call" && state.cameraEnabled) stopCamera(false);
     if (previous !== next && previous === "watch") $("#watchVideo").pause();
     if (previous !== next && state.botSpeaking) stopAudio();
     state.mode = next;
@@ -592,7 +643,10 @@
     $$("[data-mode-tab]").forEach((button) => button.classList.toggle("active", button.dataset.modeTab === next));
     $("#callView").classList.toggle("active", next === "call");
     $("#watchView").classList.toggle("active", next === "watch");
+    $("#workView").classList.toggle("active", next === "work");
+    $(".camera-device-field").hidden = next === "work";
     if (notify) send({ type: "set_mode", mode: next });
+    if (next === "work" && notify) send({ type: "refresh_work_context" });
     updatePlayerState();
   }
 
@@ -609,10 +663,17 @@
     watchButton.title = connected ? "挂断语音" : "接通语音";
     watchButton.setAttribute("aria-label", watchButton.title);
     watchButton.innerHTML = `<i data-lucide="${connected ? "phone-off" : "phone"}"></i>`;
+
+    const workButton = $("#workCallToggle");
+    workButton.classList.toggle("active", connected);
+    workButton.title = connected ? "结束语音协同" : "开始语音协同";
+    workButton.setAttribute("aria-label", workButton.title);
+    workButton.innerHTML = `<i data-lucide="${connected ? "phone-off" : "phone"}"></i>`;
+    workButton.disabled = state.mode !== "work";
   }
 
   function transcriptNodes() {
-    return [$("#callTranscript"), $("#watchTranscript")];
+    return [$("#callTranscript"), $("#watchTranscript"), $("#workTranscript")];
   }
 
   function sanitizeBotDisplayText(value) {
@@ -768,6 +829,34 @@
     }
   }
 
+  function normalizeTtsVolumePercent(value, fallback = 100) {
+    const parsed = Number(value);
+    const normalized = Number.isFinite(parsed) ? parsed : Number(fallback);
+    return Math.max(0, Math.min(100, Math.round(Number.isFinite(normalized) ? normalized : 100)));
+  }
+
+  function setTtsVolume(value, { persist = false } = {}) {
+    const percent = normalizeTtsVolumePercent(value);
+    state.ttsVolume = percent / 100;
+    $("#ttsVolume").value = String(percent);
+    $("#ttsVolumeValue").textContent = `${percent}%`;
+    if (state.currentAudio) state.currentAudio.volume = state.ttsVolume;
+    if (state.browserUtterance) state.browserUtterance.volume = state.ttsVolume;
+    if (!persist) return;
+    try { localStorage.setItem(TTS_VOLUME_STORAGE_KEY, String(percent)); }
+    catch { /* 浏览器可能禁用本地存储 */ }
+  }
+
+  function loadTtsVolumePreference() {
+    const configured = normalizeTtsVolumePercent(Number(state.room?.tts?.volume_ratio) * 100);
+    let preferred = configured;
+    try {
+      const stored = localStorage.getItem(TTS_VOLUME_STORAGE_KEY);
+      if (stored !== null && stored.trim() !== "" && Number.isFinite(Number(stored))) preferred = stored;
+    } catch { /* 浏览器可能禁用本地存储 */ }
+    setTtsVolume(preferred);
+  }
+
   function saveTalkPreferences() {
     try {
       localStorage.setItem("together_talk_mode", state.talkMode);
@@ -846,7 +935,6 @@
     }
     try {
       if (mode === "browser") {
-        await requestMicrophonePermission();
         createRecognition();
       } else if (mode === "astrbot") {
         state.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -894,16 +982,17 @@
     updateCallButtons();
     updateTalkControls();
     updateCameraButton();
-    setRoomStatus("idle", "等待接通");
+    if (state.mode === "watch") {
+      const video = $("#watchVideo");
+      setRoomStatus("watching", video.ended ? "已经看完" : (video.paused ? "已经暂停" : "一起看着"));
+    } else if (state.mode === "work") {
+      setRoomStatus("idle", "文字协同已就绪");
+    } else {
+      setRoomStatus("idle", "等待接通");
+    }
     if (wasActive && state.connected) send({ type: "call_state", active: false });
     if (notify) send({ type: "interrupt" });
     icons();
-  }
-
-  async function requestMicrophonePermission() {
-    if (!navigator.mediaDevices?.getUserMedia) throw new Error("当前环境不支持麦克风访问");
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    stream.getTracks().forEach((track) => track.stop());
   }
 
   function cameraErrorMessage(error) {
@@ -1365,7 +1454,11 @@
   function startRecognition() {
     if (!state.callActive || state.botSpeaking || state.recognitionRunning || !state.recognition) return;
     try { state.recognition.start(); }
-    catch {
+    catch (error) {
+      if (["NotAllowedError", "SecurityError"].includes(String(error?.name || ""))) {
+        fallbackFromBrowserRecognition("not-allowed");
+        return;
+      }
       state.recognitionFailCount = Math.min(state.recognitionFailCount + 1, 5);
       scheduleRecognitionRestart();
     }
@@ -1678,6 +1771,20 @@
     showFullscreenSpeech(visible);
   }
 
+  function runAfterPlaybackAction(action) {
+    if (action !== "hangup") return false;
+    state.audioQueue.length = 0;
+    window.clearTimeout(state.speakingWatchdogTimer);
+    state.botSpeaking = false;
+    restoreVideoVolume();
+    markFullscreenSpeechFinished();
+    if (state.callActive) {
+      stopCall(false);
+      showToast(`${state.room?.bot_name || "对方"} 已结束语音连接`);
+    }
+    return true;
+  }
+
   function isDuplicateWatchSpeech(message) {
     if (message?.source !== "watch_comment") return false;
     const text = sanitizeBotDisplayText(message.display_text || message.text);
@@ -1698,6 +1805,7 @@
       text: message.text,
       display_text: message.display_text,
       source: message.source,
+      after_playback_action: message.after_playback_action,
       revealed: false,
     });
     if (!state.currentAudio) playNextAudio();
@@ -1718,13 +1826,14 @@
       for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
       const url = URL.createObjectURL(new Blob([bytes], { type: item.mime }));
       const audio = new Audio(url);
+      audio.volume = state.ttsVolume;
       state.currentAudio = audio;
       state.currentAudioUrl = url;
-      const finish = () => finishCurrentAudio(audio, url);
+      const finish = () => finishCurrentAudio(audio, url, item, true);
       const fail = () => {
         revealSpeechMessage(item);
         markFullscreenSpeechStarted();
-        finish();
+        finishCurrentAudio(audio, url, item, false);
       };
       audio.addEventListener("playing", () => {
         revealSpeechMessage(item);
@@ -1743,20 +1852,21 @@
     }
   }
 
-  function finishCurrentAudio(audio, url) {
+  function finishCurrentAudio(audio, url, item, playbackCompleted = true) {
     if (url) URL.revokeObjectURL(url);
     if (state.currentAudio !== audio) return;
     state.currentAudioUrl = "";
     state.currentAudio = null;
-    playNextAudio();
+    if (!(playbackCompleted && runAfterPlaybackAction(item?.after_playback_action))) playNextAudio();
   }
 
-  function speakInBrowser(text, language = "", displayText = "", source = "") {
+  function speakInBrowser(text, language = "", displayText = "", source = "", afterPlaybackAction = "") {
     const message = { text, display_text: displayText, source, revealed: false };
     if (!window.speechSynthesis || !String(text || "").trim()) {
       revealSpeechMessage(message);
       markFullscreenSpeechStarted();
       markFullscreenSpeechFinished();
+      resumeRecognitionAfterBot();
       return;
     }
     stopAudio(true);
@@ -1764,21 +1874,23 @@
     const utterance = new SpeechSynthesisUtterance(String(text));
     utterance.lang = language || state.room?.tts?.browser_language || "zh-CN";
     utterance.rate = 1.03;
-    const finish = () => {
+    utterance.volume = state.ttsVolume;
+    const finish = (playbackCompleted) => {
       if (state.browserUtterance !== utterance) return;
       revealSpeechMessage(message);
       state.browserUtterance = null;
       markFullscreenSpeechFinished();
-      resumeRecognitionAfterBot();
+      if (!(playbackCompleted && runAfterPlaybackAction(afterPlaybackAction))) resumeRecognitionAfterBot();
     };
     utterance.addEventListener("start", () => {
       revealSpeechMessage(message);
       markFullscreenSpeechStarted();
     }, { once: true });
-    utterance.addEventListener("end", finish, { once: true });
-    utterance.addEventListener("error", finish, { once: true });
+    utterance.addEventListener("end", () => finish(true), { once: true });
+    utterance.addEventListener("error", () => finish(false), { once: true });
     state.browserUtterance = utterance;
-    window.speechSynthesis.speak(utterance);
+    try { window.speechSynthesis.speak(utterance); }
+    catch { finish(false); }
   }
 
   function stopAudio(preserveFullscreenSpeech = false) {
@@ -2213,6 +2325,7 @@
     $("#inviteButton").addEventListener("click", requestInviteLink);
     $("#copyInviteLink").addEventListener("click", copyInviteLink);
     $("#closeSettings").addEventListener("click", () => setSettingsOpen(false, true));
+    $("#ttsVolume").addEventListener("input", (event) => setTtsVolume(event.target.value, { persist: true }));
     $$("[data-stt-mode]").forEach((button) => button.addEventListener("click", () => {
       const wasActive = state.callActive;
       if (wasActive) stopCall(true);
@@ -2230,6 +2343,12 @@
     });
     $("#callToggle").addEventListener("click", () => state.callActive ? stopCall(true) : startCall());
     $("#watchCallToggle").addEventListener("click", () => state.callActive ? stopCall(true) : startCall());
+    $("#workCallToggle").addEventListener("click", () => state.callActive ? stopCall(true) : startCall());
+    $("#refreshWorkContext").addEventListener("click", () => {
+      $("#refreshWorkContext").disabled = true;
+      $("#workStatus").textContent = "正在刷新当前上下文";
+      if (!send({ type: "refresh_work_context" })) $("#refreshWorkContext").disabled = false;
+    });
     $("#watchTtsEnabled").addEventListener("change", (event) => {
       const enabled = Boolean(event.target.checked);
       if (!send({ type: "set_watch_tts", enabled })) {
@@ -2247,6 +2366,7 @@
       refreshCameraDevices(state.cameraStream?.getVideoTracks?.()[0]?.getSettings?.()?.deviceId || "").catch(() => {});
     });
     $("#interruptButton").addEventListener("click", () => { send({ type: "interrupt" }); stopAudio(); });
+    $("#workInterruptButton").addEventListener("click", () => { send({ type: "interrupt" }); stopAudio(); });
     $("#toggleFullscreen").addEventListener("click", toggleWatchFullscreen);
     const onFullscreenChange = () => {
       if (!isWatchFullscreen()) hideFullscreenSpeech(true);

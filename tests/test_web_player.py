@@ -48,7 +48,7 @@ class WebPlayerTests(unittest.TestCase):
         self.assertIn('document.body.classList.add("call-camera-on")', source)
         self.assertIn('document.body.classList.remove("call-camera-on")', source)
 
-    def test_watch_transcript_scrolls_without_moving_desktop_page(self) -> None:
+    def test_watch_transcript_scrolls_without_moving_room_page(self) -> None:
         parser = _VideoParser()
         parser.feed((ROOT / "web" / "index.html").read_text(encoding="utf-8"))
         page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
@@ -57,7 +57,10 @@ class WebPlayerTests(unittest.TestCase):
         self.assertIn('id="watchTranscript" tabindex="0"', page)
         self.assertIn("overscroll-behavior-y: contain", styles)
         self.assertIn("scrollbar-gutter: stable", styles)
-        self.assertIn('body[data-mode="watch"] { height: 100dvh; overflow-y: hidden; }', styles)
+        self.assertIn(
+            'body[data-mode="watch"], body[data-mode="work"] { height: 100dvh; overflow-y: hidden; }',
+            styles,
+        )
         self.assertIn("height: calc(100dvh - 164px)", styles)
 
     def test_watch_view_has_independent_tts_toggle(self) -> None:
@@ -68,6 +71,22 @@ class WebPlayerTests(unittest.TestCase):
         self.assertIn("语音回复", page)
         self.assertIn('send({ type: "set_watch_tts", enabled })', source)
         self.assertIn("后续观影回复仅显示文字", source)
+
+    def test_tts_volume_controls_server_audio_and_browser_fallback(self) -> None:
+        parser = _VideoParser()
+        parser.feed((ROOT / "web" / "index.html").read_text(encoding="utf-8"))
+        source = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        styles = (ROOT / "web" / "app.css").read_text(encoding="utf-8")
+
+        self.assertTrue({"ttsVolume", "ttsVolumeValue"}.issubset(parser.ids))
+        self.assertIn('const TTS_VOLUME_STORAGE_KEY = "together_tts_volume_percent"', source)
+        self.assertIn("Number(state.room?.tts?.volume_ratio) * 100", source)
+        self.assertIn("audio.volume = state.ttsVolume", source)
+        self.assertIn("utterance.volume = state.ttsVolume", source)
+        self.assertIn("state.currentAudio.volume = state.ttsVolume", source)
+        self.assertIn("state.browserUtterance.volume = state.ttsVolume", source)
+        self.assertIn("max-height: calc(100dvh - 108px)", styles)
+        self.assertIn("overscroll-behavior-y: contain", styles)
 
     def test_camera_defaults_front_and_releases_current_track_before_switching(self) -> None:
         source = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
@@ -89,7 +108,7 @@ class WebPlayerTests(unittest.TestCase):
         self.assertIn("await replaceCameraStream(true, { mirror: true })", source)
         self.assertIn("|| !cameraVisionAvailable()", source)
 
-    def test_desktop_camera_can_be_selected_and_remembered(self) -> None:
+    def test_camera_can_be_selected_and_remembered(self) -> None:
         source = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
 
         self.assertIn('localStorage.setItem("together_camera_device"', source)
@@ -133,9 +152,12 @@ class WebPlayerTests(unittest.TestCase):
         source = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
 
         self.assertIn("fallbackFromBrowserRecognition(event.error)", source)
+        self.assertIn('fallbackFromBrowserRecognition("not-allowed")', source)
         self.assertIn("浏览器语音识别不可用，已切换到 AstrBot 按键讲话", source)
         self.assertIn("浏览器语音识别不可用，已切换到 AstrBot 自由讲话", source)
         self.assertIn("仍可使用文字和摄像头通话", source)
+        self.assertNotIn("requestMicrophonePermission", source)
+        self.assertNotIn('throw new Error("当前环境不支持麦克风访问")', source)
         self.assertNotIn('["not-allowed", "service-not-allowed"].includes(event.error)) stopCall(false)', source)
 
     def test_private_tts_markup_is_never_rendered_as_bot_text(self) -> None:

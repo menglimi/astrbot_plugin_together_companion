@@ -38,6 +38,14 @@
         </span>
         <span class="action-go" aria-hidden="true"><i data-lucide="arrow-up-right"></i></span>
       </button>
+      <button class="launch-action work" type="button" data-mode="work" hidden>
+        <span class="action-icon" aria-hidden="true"><i data-lucide="briefcase-business"></i></span>
+        <span class="action-copy">
+          <strong>工作协同</strong>
+          <small id="workCapability">连接屏幕伙伴后可用</small>
+        </span>
+        <span class="action-go" aria-hidden="true"><i data-lucide="arrow-up-right"></i></span>
+      </button>
     </section>
 
     <section class="provider-strip" aria-label="能力状态">
@@ -97,6 +105,10 @@
             <label class="field"><span>浏览器识别语言</span><input name="speech.browser_language" type="text" maxlength="20" autocomplete="off" /></label>
             <label class="field"><span>TTS 最长等待（秒）</span><input name="speech.tts_timeout_seconds" type="number" min="15" max="180" step="5" inputmode="numeric" /></label>
           </div>
+          <label class="range-setting compact-range-setting">
+            <span>TTS 播放音量 <output data-output-for="speech.tts_volume_percent">100%</output></span>
+            <input name="speech.tts_volume_percent" type="range" min="0" max="100" step="5" value="100" />
+          </label>
           <div class="setting-row mode-row">
             <span>默认语音识别</span>
             <div class="segmented" role="group" aria-label="默认语音识别方式">
@@ -149,6 +161,7 @@
           </label>
           <label class="setting-row toggle-setting"><span>读取相关长期记忆</span><input name="conversation.enable_memory_context" type="checkbox" role="switch" /></label>
           <label class="setting-row toggle-setting"><span>通话安静时主动找话题</span><input name="conversation.call_proactive_enabled" type="checkbox" role="switch" /></label>
+          <label class="setting-row toggle-setting"><span>允许模型自然结束通话</span><input name="conversation.model_hangup_enabled" type="checkbox" role="switch" /></label>
           <label class="range-setting">
             <span>主动找话题等待时间 <output data-output-for="conversation.call_idle_seconds"></output></span>
             <input name="conversation.call_idle_seconds" type="range" min="60" max="900" step="30" />
@@ -162,7 +175,7 @@
   </main>
 
   <div class="toast" id="toast" hidden role="status"></div>
-  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+  <script src="./lucide.min.js"></script>
   <script src="./launcher.js"></script>
 </body>
 </html>

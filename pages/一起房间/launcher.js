@@ -94,7 +94,7 @@
       tunnelStatus.textContent = tunnel.error || "按需生成临时 HTTPS 地址，适合手机访问";
       setTunnelButton("radio", "启动临时穿透");
     } else {
-      tunnelStatus.textContent = "未检测到 cloudflared，请先安装客户端";
+      tunnelStatus.textContent = "未检测到 cloudflared，请先安装 cloudflared";
       setTunnelButton("circle-alert", "缺少 cloudflared", { disabled: true });
     }
   }
@@ -118,13 +118,21 @@
       document.getElementById("watchCapability").textContent = data?.capabilities?.vision?.available
         ? `画面理解：${data.capabilities.vision.label || "可用"}`
         : "需配置支持图片的视觉模型";
+      const workAvailable = data?.capabilities?.work?.available === true;
+      const workButton = document.querySelector('[data-mode="work"]');
+      workButton.hidden = !workAvailable;
+      document.getElementById("workCapability").textContent = workAvailable
+        ? "结合屏幕伙伴的脱敏上下文"
+        : "未安装屏幕伙伴插件";
       document.getElementById("callCapability").textContent = data?.capabilities?.stt?.available
         ? "浏览器识别 / AstrBot STT"
         : (SpeechRecognition ? "Edge / Chrome 免配置识别" : "可用文字通话，语音需配置 STT");
       if (!data?.capabilities?.stt?.available) {
         document.getElementById("sttProvider").textContent = SpeechRecognition ? "浏览器免配置" : "未配置";
       }
-      document.querySelectorAll("[data-mode]").forEach((button) => { button.disabled = !ready; });
+      document.querySelectorAll("[data-mode]").forEach((button) => {
+        button.disabled = !ready || (button.dataset.mode === "work" && !workAvailable);
+      });
     } catch (error) {
       badgeNode.textContent = "连接失败";
       badgeNode.className = "presence offline";
@@ -168,6 +176,7 @@
 
   function updateRangeOutputs() {
     const units = {
+      "speech.tts_volume_percent": "%",
       "watch.comment_interval_seconds": "秒",
       "watch.scene_min_interval_seconds": "秒",
       "watch.memory_refresh_seconds": "秒",
@@ -176,7 +185,8 @@
     };
     configForm.querySelectorAll('input[type="range"][name]').forEach((input) => {
       const output = configForm.querySelector(`[data-output-for="${input.name}"]`);
-      if (output) output.textContent = `${input.value} ${units[input.name] || ""}`.trim();
+      const unit = units[input.name] || "";
+      if (output) output.textContent = unit === "%" ? `${input.value}%` : `${input.value} ${unit}`.trim();
     });
   }
 
