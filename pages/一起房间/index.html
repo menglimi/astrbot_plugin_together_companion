@@ -95,6 +95,7 @@
             <label class="field"><span>STT Provider</span><select name="speech.stt_provider_id" data-provider-kind="stt"></select></label>
             <label class="field"><span>TTS Provider</span><select name="speech.tts_provider_id" data-provider-kind="tts"></select></label>
             <label class="field"><span>浏览器识别语言</span><input name="speech.browser_language" type="text" maxlength="20" autocomplete="off" /></label>
+            <label class="field"><span>TTS 最长等待（秒）</span><input name="speech.tts_timeout_seconds" type="number" min="15" max="180" step="5" inputmode="numeric" /></label>
           </div>
           <div class="setting-row mode-row">
             <span>默认语音识别</span>
@@ -112,6 +113,10 @@
           <label class="setting-row toggle-setting">
             <span>浏览器 TTS 兜底</span>
             <input name="speech.browser_tts_fallback" type="checkbox" role="switch" />
+          </label>
+          <label class="setting-row toggle-setting" title="用于后续分句流式 TTS、持续监听和语音插话，关闭时保持原有流程">
+            <span>实时流式与全双工（实验性）</span>
+            <input name="speech.realtime_duplex_enabled" type="checkbox" role="switch" />
           </label>
         </div>
 

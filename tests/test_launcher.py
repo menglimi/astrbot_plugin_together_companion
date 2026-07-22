@@ -43,6 +43,8 @@ class LauncherTests(unittest.TestCase):
         self.assertIn('data-provider-kind="chat" required', page)
         self.assertIn("请选择对话模型（必选）", script)
         self.assertIn('name="watch.comment_interval_seconds"', page)
+        self.assertIn('name="speech.realtime_duplex_enabled"', page)
+        self.assertIn('name="speech.tts_timeout_seconds"', page)
         self.assertIn('role="switch"', page)
         self.assertIn('requestEndpoint("POST", "config/save"', script)
         self.assertNotIn('name="server.host"', page)
@@ -402,6 +404,8 @@ class PageConfigApiTests(unittest.IsolatedAsyncioTestCase):
                     "conversation.chat_provider_id": "chat-a",
                     "conversation.history_turns": 8,
                     "speech.stt_mode": "browser",
+                    "speech.tts_timeout_seconds": 75,
+                    "speech.realtime_duplex_enabled": True,
                     "watch.comment_interval_seconds": 90,
                     "watch.scene_min_interval_seconds": 25,
                     "watch.duck_volume_percent": 24,
@@ -425,6 +429,8 @@ class PageConfigApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, plugin.config.saved)
         self.assertEqual(8, plugin.history_turns)
         self.assertEqual("browser", plugin.stt_mode)
+        self.assertEqual(75, plugin.tts_timeout_seconds)
+        self.assertTrue(plugin.realtime_duplex_enabled)
         self.assertEqual(90, plugin.watch_comment_interval_seconds)
         self.assertEqual(25, plugin.watch_scene_min_interval_seconds)
         self.assertEqual(0.24, plugin.watch_duck_volume_ratio)
@@ -455,6 +461,8 @@ class PageConfigApiTests(unittest.IsolatedAsyncioTestCase):
                 "watch.comment_interval_seconds": 9999,
                 "watch.memory_refresh_seconds": 1,
                 "speech.stt_mode": "unexpected",
+                "speech.tts_timeout_seconds": 999,
+                "speech.realtime_duplex_enabled": "true",
                 "unknown.key": "ignored",
             }
         )
@@ -463,6 +471,8 @@ class PageConfigApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(600, updates["watch.comment_interval_seconds"])
         self.assertEqual(90, updates["watch.memory_refresh_seconds"])
         self.assertEqual("auto", updates["speech.stt_mode"])
+        self.assertEqual(180, updates["speech.tts_timeout_seconds"])
+        self.assertTrue(updates["speech.realtime_duplex_enabled"])
         self.assertNotIn("unknown.key", updates)
 
 

@@ -78,6 +78,17 @@ class WebPlayerTests(unittest.TestCase):
         self.assertLess(release_index, acquire_index)
         self.assertIn("切换失败，已恢复原摄像头", source)
 
+    def test_camera_detection_is_independent_from_vision_provider(self) -> None:
+        source = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function cameraVisionAvailable()", source)
+        self.assertNotIn('if (!state.room?.call?.camera_available) { showToast("当前没有可用的视觉模型")', source)
+        self.assertIn("const detectedDevices = (await navigator.mediaDevices.enumerateDevices())", source)
+        self.assertIn("const devices = detectedDevices.filter((item) => item.deviceId)", source)
+        self.assertIn("首次开启授权后会显示设备名称", source)
+        self.assertIn("await replaceCameraStream(true, { mirror: true })", source)
+        self.assertIn("|| !cameraVisionAvailable()", source)
+
     def test_desktop_camera_can_be_selected_and_remembered(self) -> None:
         source = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
 

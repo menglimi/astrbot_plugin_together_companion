@@ -39,7 +39,7 @@ from .tunnel import CloudflareQuickTunnel
 
 
 PLUGIN_NAME = "astrbot_plugin_together_companion"
-PLUGIN_VERSION = "0.6.0"
+PLUGIN_VERSION = "0.7.0"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 _active_plugin: "TogetherCompanionPlugin | None" = None
 
@@ -250,6 +250,8 @@ class TogetherCompanionPlugin(Star):
         self.browser_language = self._cfg_str("speech.browser_language", "zh-CN") or "zh-CN"
         self.tts_provider_id = self._cfg_str("speech.tts_provider_id", "")
         self.browser_tts_fallback = self._cfg_bool("speech.browser_tts_fallback", True)
+        self.tts_timeout_seconds = _clamp_int(self._cfg("speech.tts_timeout_seconds", 60), 60, 15, 180)
+        self.realtime_duplex_enabled = self._cfg_bool("speech.realtime_duplex_enabled", False)
 
         self.watch_auto_comment = self._cfg_bool("watch.auto_comment", True)
         self.watch_prepare_knowledge = self._cfg_bool("watch.prepare_knowledge", True)
@@ -795,6 +797,8 @@ class TogetherCompanionPlugin(Star):
             "speech.browser_language": "zh-CN",
             "speech.tts_provider_id": "",
             "speech.browser_tts_fallback": True,
+            "speech.tts_timeout_seconds": 60,
+            "speech.realtime_duplex_enabled": False,
             "watch.prepare_knowledge": True,
             "watch.auto_comment": True,
             "watch.comment_interval_seconds": 60,
@@ -822,6 +826,7 @@ class TogetherCompanionPlugin(Star):
             "conversation.record_visible_turns",
             "speech.stt_correction_enabled",
             "speech.browser_tts_fallback",
+            "speech.realtime_duplex_enabled",
             "watch.prepare_knowledge",
             "watch.auto_comment",
             "watch.duck_video_volume",
@@ -829,6 +834,7 @@ class TogetherCompanionPlugin(Star):
         integer_ranges = {
             "conversation.history_turns": (2, 60),
             "conversation.call_idle_seconds": (60, 900),
+            "speech.tts_timeout_seconds": (15, 180),
             "watch.comment_interval_seconds": (20, 600),
             "watch.scene_min_interval_seconds": (8, 120),
             "watch.memory_refresh_seconds": (90, 900),
@@ -883,6 +889,8 @@ class TogetherCompanionPlugin(Star):
         self.browser_language = self._cfg_str("speech.browser_language", "zh-CN") or "zh-CN"
         self.tts_provider_id = self._cfg_str("speech.tts_provider_id", "")
         self.browser_tts_fallback = self._cfg_bool("speech.browser_tts_fallback", True)
+        self.tts_timeout_seconds = _clamp_int(self._cfg("speech.tts_timeout_seconds", 60), 60, 15, 180)
+        self.realtime_duplex_enabled = self._cfg_bool("speech.realtime_duplex_enabled", False)
         self.watch_prepare_knowledge = self._cfg_bool("watch.prepare_knowledge", True)
         self.watch_auto_comment = self._cfg_bool("watch.auto_comment", True)
         self.watch_comment_interval_seconds = _clamp_int(self._cfg("watch.comment_interval_seconds", 60), 60, 20, 600)
@@ -1550,8 +1558,11 @@ class TogetherCompanionPlugin(Star):
             "call": {
                 "proactive_enabled": bool(getattr(self, "call_proactive_enabled", True)),
                 "idle_seconds": int(getattr(self, "call_idle_seconds", 120)),
-                "camera_available": capabilities["vision"]["available"],
+                # 摄像头预览属于浏览器能力，不应被视觉模型配置硬性禁用。
+                "camera_available": True,
+                "camera_vision_available": capabilities["vision"]["available"],
                 "camera_label": capabilities["vision"]["label"],
+                "realtime_duplex_enabled": bool(getattr(self, "realtime_duplex_enabled", False)),
             },
             "stt": {
                 "mode": self.stt_mode,
@@ -1564,6 +1575,7 @@ class TogetherCompanionPlugin(Star):
                 "server_label": capabilities["tts"]["label"],
                 "browser_fallback": self.browser_tts_fallback,
                 "browser_language": companion_tts.get("browser_language") or "zh-CN",
+                "timeout_seconds": int(getattr(self, "tts_timeout_seconds", 60)),
             },
             "chat": capabilities["chat"],
             "vision": capabilities["vision"],
@@ -4118,6 +4130,7 @@ class TogetherCompanionPlugin(Star):
         bridge = getattr(api, "synthesize_realtime_voice", None) if api is not None else None
         voice_config = self._companion_realtime_voice_config()
         browser_language = str(voice_config.get("browser_language") or "zh-CN")
+        timeout_seconds = _clamp_int(getattr(self, "tts_timeout_seconds", 60), 60, 15, 180)
         if provider is None and not callable(bridge):
             await self.send_room_payload(
                 room,
@@ -4130,6 +4143,17 @@ class TogetherCompanionPlugin(Star):
                 },
             )
             return
+        synthesis_started_at = time.perf_counter()
+        logger.info(
+            "[TogetherCompanion] TTS 开始: room=%s mode=%s provider=%s bridge=%s language=%s chars=%s timeout=%ss",
+            room.room_id[:10],
+            room.mode,
+            self._provider_label(provider),
+            bool(callable(bridge)),
+            browser_language,
+            len(spoken),
+            timeout_seconds,
+        )
         await self.send_room_payload(room, {"type": "status", "state": "speaking", "text": "正在说话"})
         try:
             synthesis: dict[str, Any] | None = None
@@ -4140,25 +4164,49 @@ class TogetherCompanionPlugin(Star):
                 }
                 try:
                     bridge_parameters = inspect.signature(bridge).parameters.values()
-                    if any(
+                    signature_supports_play_local = any(
                         parameter.name == "play_local"
                         or parameter.kind == inspect.Parameter.VAR_KEYWORD
                         for parameter in bridge_parameters
-                    ):
+                    )
+                    if signature_supports_play_local and getattr(self, "_tts_bridge_play_local_supported", None) is not False:
                         bridge_kwargs["play_local"] = False
                 except (TypeError, ValueError):
                     pass
-                bridged = await self._invoke_extension(
-                    api,
-                    "synthesize_realtime_voice",
-                    spoken,
-                    timeout=120,
-                    **bridge_kwargs,
-                )
+                try:
+                    bridged = await self._invoke_extension(
+                        api,
+                        "synthesize_realtime_voice",
+                        spoken,
+                        timeout=timeout_seconds,
+                        **bridge_kwargs,
+                    )
+                except TypeError as exc:
+                    error_text = str(exc)
+                    incompatible_play_local = (
+                        "play_local" in bridge_kwargs
+                        and "play_local" in error_text
+                        and "unexpected keyword" in error_text.lower()
+                    )
+                    if not incompatible_play_local:
+                        raise
+                    self._tts_bridge_play_local_supported = False
+                    bridge_kwargs.pop("play_local", None)
+                    logger.info("[TogetherCompanion] 陪伴 TTS 桥接不支持 play_local，已自动兼容旧接口")
+                    bridged = await self._invoke_extension(
+                        api,
+                        "synthesize_realtime_voice",
+                        spoken,
+                        timeout=timeout_seconds,
+                        **bridge_kwargs,
+                    )
+                else:
+                    if "play_local" in bridge_kwargs:
+                        self._tts_bridge_play_local_supported = True
                 synthesis = dict(bridged) if isinstance(bridged, dict) else {}
                 audio_path = synthesis.get("audio_path", "")
             else:
-                audio_path = await asyncio.wait_for(provider.get_audio(spoken), timeout=120)
+                audio_path = await asyncio.wait_for(provider.get_audio(spoken), timeout=timeout_seconds)
             if room.mode == "watch" and not room.watch_tts_enabled:
                 if visible_text:
                     await self.send_room_payload(
@@ -4208,10 +4256,41 @@ class TogetherCompanionPlugin(Star):
                     "source": display_source,
                 },
             )
+            logger.info(
+                "[TogetherCompanion] TTS 完成: room=%s provider=%s elapsed=%dms bytes=%s path=%s",
+                room.room_id[:10],
+                self._provider_label(provider),
+                int((time.perf_counter() - synthesis_started_at) * 1000),
+                len(audio_bytes),
+                path.name,
+            )
         except asyncio.CancelledError:
+            logger.info(
+                "[TogetherCompanion] TTS 已取消: room=%s provider=%s elapsed=%dms",
+                room.room_id[:10],
+                self._provider_label(provider),
+                int((time.perf_counter() - synthesis_started_at) * 1000),
+            )
+            if visible_text:
+                try:
+                    await asyncio.shield(
+                        self.send_room_payload(
+                            room,
+                            {"type": "bot_text", "text": visible_text, "source": display_source},
+                        )
+                    )
+                except (asyncio.CancelledError, Exception):
+                    pass
             raise
         except Exception as exc:
-            logger.warning("[TogetherCompanion] TTS 合成失败，回退浏览器朗读: %s", exc)
+            error_text = _single_line(exc, 240) or exc.__class__.__name__
+            logger.warning(
+                "[TogetherCompanion] TTS 合成失败: room=%s provider=%s elapsed=%dms error=%s",
+                room.room_id[:10],
+                self._provider_label(provider),
+                int((time.perf_counter() - synthesis_started_at) * 1000),
+                error_text,
+            )
             if room.mode == "watch" and not room.watch_tts_enabled and visible_text:
                 await self.send_room_payload(
                     room,

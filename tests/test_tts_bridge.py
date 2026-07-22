@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -297,6 +298,72 @@ class TogetherTtsBridgeTests(unittest.IsolatedAsyncioTestCase):
         finally:
             Path(audio_path).unlink(missing_ok=True)
 
+    async def test_proxy_bridge_retries_and_caches_play_local_incompatibility(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
+            temp_audio.write(b"audio")
+            audio_path = temp_audio.name
+
+        class ProxyApi:
+            def __init__(self) -> None:
+                self.calls = []
+
+            async def synthesize_realtime_voice(self, text, **kwargs):
+                self.calls.append(dict(kwargs))
+                if "play_local" in kwargs:
+                    raise TypeError("legacy helper got an unexpected keyword argument 'play_local'")
+                return {
+                    "available": True,
+                    "audio_path": audio_path,
+                    "spoken_text": "分かった。",
+                    "fallback_text": "分かった。",
+                    "language": "ja-JP",
+                }
+
+        provider = SimpleNamespace(get_audio=AsyncMock())
+        api = ProxyApi()
+        plugin = self._plugin(provider, api)
+        room = RoomSession("room", "ticket", "call", "123", None)
+        try:
+            await plugin._synthesize_and_send(room, "知道啦。", display_text="知道啦。")
+            await plugin._synthesize_and_send(room, "明白啦。", display_text="明白啦。")
+
+            self.assertEqual(3, len(api.calls))
+            self.assertIn("play_local", api.calls[0])
+            self.assertNotIn("play_local", api.calls[1])
+            self.assertNotIn("play_local", api.calls[2])
+            self.assertFalse(plugin._tts_bridge_play_local_supported)
+        finally:
+            Path(audio_path).unlink(missing_ok=True)
+
+    async def test_cancelled_tts_reveals_completed_reply_text(self) -> None:
+        started = asyncio.Event()
+
+        async def wait_forever(*_args, **_kwargs):
+            started.set()
+            await asyncio.Event().wait()
+
+        provider = SimpleNamespace(get_audio=AsyncMock())
+        api = SimpleNamespace(synthesize_realtime_voice=wait_forever)
+        plugin = self._plugin(provider, api)
+        room = RoomSession("room", "ticket", "call", "123", None)
+        task = asyncio.create_task(
+            plugin._synthesize_and_send(
+                room,
+                "已经生成的回复。",
+                display_text="已经生成的回复。",
+                display_source="reply",
+            )
+        )
+        await started.wait()
+        task.cancel()
+
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+
+        payload_types = [call.args[1].get("type") for call in plugin.send_room_payload.await_args_list]
+        self.assertIn("bot_text", payload_types)
+        self.assertEqual("已经生成的回复。", plugin.send_room_payload.await_args_list[-1].args[1]["text"])
+
     async def test_missing_provider_uses_converted_browser_fallback(self) -> None:
         api = SimpleNamespace(
             synthesize_realtime_voice=AsyncMock(
@@ -337,7 +404,7 @@ class TogetherTtsBridgeTests(unittest.IsolatedAsyncioTestCase):
         plugin._capabilities = AsyncMock(
             return_value={
                 "chat": {"available": True, "label": "chat"},
-                "vision": {"available": True, "label": "vision"},
+                "vision": {"available": False, "label": "未配置"},
                 "stt": {"available": True, "label": "stt"},
                 "tts": {"available": True, "label": "tts"},
             }
@@ -348,6 +415,8 @@ class TogetherTtsBridgeTests(unittest.IsolatedAsyncioTestCase):
         plugin.stt_mode = "browser"
         plugin.browser_language = "zh-CN"
         plugin.browser_tts_fallback = True
+        plugin.tts_timeout_seconds = 60
+        plugin.realtime_duplex_enabled = True
         plugin.watch_auto_comment = True
         plugin.watch_comment_interval_seconds = 30
         plugin.watch_scene_min_interval_seconds = 8
@@ -359,6 +428,10 @@ class TogetherTtsBridgeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual("zh-CN", bootstrap["stt"]["browser_language"])
         self.assertEqual("ja-JP", bootstrap["tts"]["browser_language"])
+        self.assertEqual(60, bootstrap["tts"]["timeout_seconds"])
+        self.assertTrue(bootstrap["call"]["camera_available"])
+        self.assertFalse(bootstrap["call"]["camera_vision_available"])
+        self.assertTrue(bootstrap["call"]["realtime_duplex_enabled"])
 
     def test_browser_fallback_uses_tts_language(self) -> None:
         source = (

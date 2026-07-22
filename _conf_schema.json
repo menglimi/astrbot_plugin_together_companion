@@ -184,6 +184,23 @@
         "type": "bool",
         "default": true,
         "hint": "没有可用 TTS 或服务端合成失败时，使用浏览器 SpeechSynthesis 朗读。"
+      },
+      "tts_timeout_seconds": {
+        "description": "TTS 最长等待时间（秒）",
+        "type": "int",
+        "default": 60,
+        "range": {
+          "min": 15,
+          "max": 180,
+          "step": 5
+        },
+        "hint": "包含陪伴插件语种转换和语音合成；超时后立即回退文字或浏览器朗读。"
+      },
+      "realtime_duplex_enabled": {
+        "description": "实时流式语音与全双工（实验性）",
+        "type": "bool",
+        "default": false,
+        "hint": "为分句流式 TTS、持续监听和语音插话启用统一实验开关。当前版本先建立配置入口，关闭时保持原有稳定流程。"
       }
     }
   },

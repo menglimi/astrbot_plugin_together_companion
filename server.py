@@ -14,8 +14,9 @@ from astrbot.api import logger
 from .models import RoomSession
 
 try:
-    from aiohttp import ClientSession, ClientTimeout, WSMsgType, web
+    from aiohttp import ClientConnectionError, ClientSession, ClientTimeout, WSMsgType, web
 except ImportError:  # pragma: no cover - reported clearly during plugin startup
+    ClientConnectionError = ConnectionError
     ClientSession = None
     ClientTimeout = None
     WSMsgType = None
@@ -223,14 +224,17 @@ class TogetherRoomServer:
             response_headers.setdefault("Content-Type", content_type)
             response_headers["Content-Disposition"] = "inline"
             response = web.StreamResponse(status=upstream.status, headers=response_headers)
-            await response.prepare(request)
+            try:
+                await response.prepare(request)
+            except (ConnectionError, ClientConnectionError):
+                return response
             if request.method == "HEAD":
                 return response
             try:
                 async for chunk in upstream.content.iter_chunked(256 * 1024):
                     await response.write(chunk)
                 await response.write_eof()
-            except ConnectionResetError:
+            except (ConnectionError, ClientConnectionError):
                 pass
             return response
 

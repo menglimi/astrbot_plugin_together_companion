@@ -908,10 +908,17 @@
 
   function cameraErrorMessage(error) {
     if (!window.isSecureContext) return "摄像头需要 HTTPS 或本机安全环境";
+    if (!navigator.mediaDevices?.getUserMedia) return "当前浏览器不支持摄像头访问，请使用系统 Chrome、Edge 或 Safari";
     if (error?.name === "NotAllowedError") return "摄像头权限被拒绝，请在浏览器地址栏中重新允许";
     if (error?.name === "NotFoundError") return "没有检测到可用摄像头";
     if (error?.name === "NotReadableError") return "摄像头正被其他应用占用";
+    if (["OverconstrainedError", "ConstraintNotSatisfiedError"].includes(error?.name)) return "当前摄像头不支持所请求的画面规格";
+    if (error?.name === "SecurityError") return "当前页面没有摄像头访问权限，请改用系统浏览器打开";
     return error?.message || "无法开启摄像头";
+  }
+
+  function cameraVisionAvailable() {
+    return Boolean(state.room?.call?.camera_vision_available);
   }
 
   function rememberCameraDevice(deviceId) {
@@ -935,16 +942,31 @@
   async function refreshCameraDevices(currentDeviceId = "") {
     const select = $("#cameraDeviceSelect");
     const hint = $("#cameraDeviceHint");
-    const available = Boolean(state.room?.call?.camera_available);
+    if (!window.isSecureContext) {
+      state.cameraDevices = [];
+      select.disabled = true;
+      hint.textContent = "摄像头需要 HTTPS 或本机安全环境";
+      return [];
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      state.cameraDevices = [];
+      select.disabled = true;
+      hint.textContent = "当前浏览器不支持摄像头访问";
+      return [];
+    }
     if (!navigator.mediaDevices?.enumerateDevices) {
       state.cameraDevices = [];
       select.disabled = true;
-      hint.textContent = "当前浏览器不支持选择摄像头";
+      hint.textContent = cameraVisionAvailable()
+        ? "可自动使用摄像头，当前浏览器不支持设备列表"
+        : "可自动使用摄像头；未配置视觉模型，仅本机预览";
       return [];
     }
     try {
-      const devices = (await navigator.mediaDevices.enumerateDevices())
-        .filter((item) => item.kind === "videoinput" && item.deviceId);
+      const detectedDevices = (await navigator.mediaDevices.enumerateDevices())
+        .filter((item) => item.kind === "videoinput");
+      // Safari 和部分移动浏览器会在首次授权前隐藏 deviceId，不能据此判定无摄像头。
+      const devices = detectedDevices.filter((item) => item.deviceId);
       state.cameraDevices = devices;
       if (state.selectedCameraId && !devices.some((item) => item.deviceId === state.selectedCameraId)) {
         rememberCameraDevice("");
@@ -955,7 +977,7 @@
       select.value = devices.some((item) => item.deviceId === state.selectedCameraId)
         ? state.selectedCameraId
         : "";
-      select.disabled = !available || devices.length === 0;
+      select.disabled = devices.length === 0;
       const labelsVisible = devices.some((item) => String(item.label || "").trim());
       const currentIndex = devices.findIndex((item) => item.deviceId === currentDeviceId);
       const currentDevice = currentIndex >= 0 ? devices[currentIndex] : null;
@@ -963,13 +985,14 @@
       const currentWidth = Number(currentSettings.width) || 0;
       const currentHeight = Number(currentSettings.height) || 0;
       const resolutionLabel = currentWidth && currentHeight ? ` · ${currentWidth}×${currentHeight}` : "";
-      hint.textContent = !available
-        ? "需要先配置支持图片输入的模型"
-        : (devices.length === 0
-          ? "没有检测到摄像头"
-          : (currentDevice
-            ? `当前使用：${cameraDeviceName(currentDevice, currentIndex)}${resolutionLabel}`
-            : (labelsVisible ? `已检测到 ${devices.length} 台摄像头` : "开启一次摄像头授权后会显示设备名称")));
+      const visionSuffix = cameraVisionAvailable() ? "" : "；未配置视觉模型，仅本机预览";
+      hint.textContent = detectedDevices.length === 0
+        ? `尚未获得摄像头信息，接通后点击镜头按钮检测${visionSuffix}`
+        : (currentDevice
+          ? `当前使用：${cameraDeviceName(currentDevice, currentIndex)}${resolutionLabel}${visionSuffix}`
+          : (labelsVisible
+            ? `已检测到 ${detectedDevices.length} 台摄像头${visionSuffix}`
+            : `检测到摄像头，首次开启授权后会显示设备名称${visionSuffix}`));
       $("#switchCamera").hidden = !state.cameraEnabled || devices.length < 2;
       return devices;
     } catch {
@@ -982,12 +1005,15 @@
 
   function updateCameraButton() {
     const button = $("#cameraToggle");
-    const available = Boolean(state.room?.call?.camera_available);
-    button.disabled = !state.callActive || !available;
+    button.disabled = !state.callActive;
     button.classList.toggle("camera-active", state.cameraEnabled);
-    button.title = !available
-      ? "需要支持图片输入的对话或视觉模型"
-      : (state.cameraEnabled ? "关闭摄像头" : "开启摄像头");
+    button.title = !window.isSecureContext
+      ? "摄像头需要 HTTPS 或本机安全环境"
+      : (!navigator.mediaDevices?.getUserMedia
+        ? "当前浏览器不支持摄像头访问"
+        : (state.cameraEnabled
+          ? "关闭摄像头"
+          : (cameraVisionAvailable() ? "开启摄像头" : "开启摄像头（仅本机预览）")));
     button.setAttribute("aria-label", button.title);
     button.innerHTML = `<i data-lucide="${state.cameraEnabled ? "video-off" : "video"}"></i>`;
     icons();
@@ -1012,14 +1038,17 @@
       // 部分手机在 track.stop() 后仍需一个短暂事件循环才能释放摄像头硬件。
       await new Promise((resolve) => window.setTimeout(resolve, 180));
     }
-    const nextStream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: {
+    const requestedVideo = videoConstraints === true
+      ? true
+      : {
         width: { ideal: CAMERA_PREVIEW_WIDTH },
         height: { ideal: CAMERA_PREVIEW_HEIGHT },
         frameRate: { ideal: CAMERA_PREVIEW_FRAME_RATE, max: CAMERA_PREVIEW_FRAME_RATE },
         ...videoConstraints,
-      },
+      };
+    const nextStream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: requestedVideo,
     });
     try {
       video.srcObject = nextStream;
@@ -1074,13 +1103,22 @@
           if (!["OverconstrainedError", "ConstraintNotSatisfiedError", "NotFoundError"].includes(error?.name)) {
             throw error;
           }
-          await replaceCameraStream({ facingMode: { ideal: "user" } }, { mirror: true });
+          try {
+            await replaceCameraStream({ facingMode: { ideal: "user" } }, { mirror: true });
+          } catch (fallbackError) {
+            if (!["OverconstrainedError", "ConstraintNotSatisfiedError", "NotFoundError", "TypeError"].includes(fallbackError?.name)) {
+              throw fallbackError;
+            }
+            await replaceCameraStream(true, { mirror: true });
+          }
         }
       }
       window.clearInterval(state.cameraFrameTimer);
       state.cameraFrameTimer = window.setInterval(sendCameraFrame, 8000);
       window.setTimeout(sendCameraFrame, 600);
-      if (!silent) showToast("摄像头已开启");
+      if (!silent) {
+        showToast(cameraVisionAvailable() ? "摄像头已开启" : "摄像头已开启；未配置视觉模型，当前仅本机预览", 4200);
+      }
       return true;
     } catch (error) {
       showToast(cameraErrorMessage(error), 4800);
@@ -1109,7 +1147,10 @@
 
   async function toggleCamera() {
     if (!state.callActive) { showToast("请先接通通话"); return; }
-    if (!state.room?.call?.camera_available) { showToast("当前没有可用的视觉模型"); return; }
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+      showToast(cameraErrorMessage(), 4800);
+      return;
+    }
     if (state.cameraEnabled) stopCamera();
     else await startCamera();
   }
@@ -1171,7 +1212,7 @@
       return false;
     } finally {
       button.disabled = !state.cameraEnabled;
-      select.disabled = !state.room?.call?.camera_available || state.cameraDevices.length === 0;
+      select.disabled = state.cameraDevices.length === 0;
     }
   }
 
@@ -1525,7 +1566,7 @@
         // base64 膨胀 4/3 后需低于服务端 16MiB 消息上限，留足信封余量
         if (blob.size > 10 * 1024 * 1024) { showToast("这段语音太长，请分开说"); return; }
         const data = await blobToBase64(blob);
-        const frame = await captureCameraFrameData();
+        const frame = cameraVisionAvailable() ? await captureCameraFrameData() : "";
         send({
           type: "audio_utterance",
           utterance_id: newUtteranceId(),
@@ -1604,7 +1645,7 @@
     if (!value) return false;
     const frame = state.mode === "watch"
       ? await captureFrameData(720, .76)
-      : (state.mode === "call" ? await captureCameraFrameData() : "");
+      : (state.mode === "call" && cameraVisionAvailable() ? await captureCameraFrameData() : "");
     if (state.botSpeaking) stopAudio();
     noteCallActivity();
     const utteranceId = source === "browser_stt" ? newUtteranceId() : "";
@@ -2114,6 +2155,7 @@
       !state.connected
       || !state.callActive
       || !state.cameraEnabled
+      || !cameraVisionAvailable()
       || state.mode !== "call"
       || document.visibilityState === "hidden"
       || state.cameraCaptureBusy
