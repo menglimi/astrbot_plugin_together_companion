@@ -802,6 +802,8 @@ body.call-connected .call-status-dot {
 .work-context-list > div:last-child { border-bottom: 0; }
 .work-context-list dt { color: var(--muted); font-size: 12px; }
 .work-context-list dd { margin: 0; overflow-wrap: anywhere; font-size: 13px; line-height: 1.55; }
+.work-context-list .work-goal-row { background: color-mix(in srgb, var(--green-soft) 42%, transparent); }
+.work-context-list .work-goal-row dd { font-weight: 600; }
 
 .work-presence { display: grid; grid-template-columns: 44px minmax(0, 1fr) 58px 42px; align-items: center; gap: 12px; padding: 16px 20px; border-top: 1px solid var(--line); background: var(--surface-2); }
 .work-presence img { width: 44px; height: 44px; border-radius: 50%; object-fit: cover; }

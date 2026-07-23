@@ -115,6 +115,11 @@ class RoomSession:
     call_action_token: str = field(default_factory=lambda: secrets.token_urlsafe(18))
     work_context: dict[str, Any] = field(default_factory=dict)
     work_context_updated_at: float = 0.0
+    # 工作协同的执行状态由模型在每轮回复中维护，避免只依赖瞬时屏幕摘要。
+    work_state: dict[str, Any] = field(default_factory=dict)
+    work_state_updated_at: float = 0.0
+    work_context_signature: str = ""
+    work_last_progress_check_at: float = 0.0
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     conversation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     astrbot_unified_msg_origin: str = ""

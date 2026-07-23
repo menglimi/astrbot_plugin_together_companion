@@ -97,6 +97,7 @@
     videoRateBeforeHold: 1,
     videoSurfaceSuppressClick: false,
     workContext: null,
+    workState: null,
   };
 
   function icons() {
@@ -418,6 +419,9 @@
       case "work_context":
         applyWorkContext(message.context || {});
         break;
+      case "work_state":
+        applyWorkState(message.state || {});
+        break;
       case "invite_link":
         state.inviteRequestPending = false;
         $("#inviteButton").disabled = false;
@@ -546,7 +550,10 @@
     const workTab = $('[data-mode-tab="work"]');
     workTab.hidden = !workAvailable;
     $(".mode-tabs").classList.toggle("has-work", workAvailable);
-    if (workAvailable) applyWorkContext(room.work?.context || {});
+    if (workAvailable) {
+      applyWorkContext(room.work?.context || {});
+      applyWorkState(room.work?.state || {});
+    }
     state.sttMode = room.stt?.mode || "auto";
     setActiveSttButton(state.sttMode);
     $("#chatCapability").textContent = room.chat?.available ? (room.chat.label || "可用") : "未配置";
@@ -598,6 +605,26 @@
       : "屏幕伙伴已连接，等待可用上下文";
     $("#workConversationStatus").textContent = value.tracking_enabled ? "上下文同步中" : "按需读取";
     $("#refreshWorkContext").disabled = false;
+  }
+
+  function applyWorkState(workState) {
+    const value = workState && typeof workState === "object" ? workState : {};
+    const criteria = Array.isArray(value.success_criteria) ? value.success_criteria.filter(Boolean) : [];
+    const blockers = Array.isArray(value.blockers) ? value.blockers.filter(Boolean) : [];
+    const labels = {
+      not_started: "等待确认",
+      in_progress: "进行中",
+      blocked: "受阻",
+      completed: "已完成",
+    };
+    state.workState = value;
+    $("#workGoal").textContent = value.goal || "尚未确认";
+    $("#workCriteria").textContent = criteria.length ? criteria.join("；") : "尚未确认";
+    $("#workProgress").textContent = [labels[value.status] || "等待目标", value.progress || value.current_step || ""]
+      .filter(Boolean)
+      .join(" · ");
+    $("#workNextAction").textContent = value.next_action || "先描述想完成的结果";
+    $("#workBlockers").textContent = blockers.length ? blockers.join("；") : "暂无";
   }
 
   function requestInviteLink() {

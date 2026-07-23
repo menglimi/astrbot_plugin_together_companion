@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from importlib import resources as importlib_resources
 import json
 import mimetypes
 import re
@@ -25,12 +26,34 @@ except ImportError:  # pragma: no cover - reported clearly during plugin startup
 
 class TogetherRoomServer:
     MAX_WEBSOCKET_MESSAGE_BYTES = 16 * 1024 * 1024
-    def __init__(self, plugin: Any, *, host: str, port: int, web_root: Path) -> None:
+    REQUIRED_WEB_ASSETS = ("index.html", "app.css", "app.js", "lucide.min.js")
+
+    def __init__(
+        self,
+        plugin: Any,
+        *,
+        host: str,
+        port: int,
+        web_root: Path,
+        resource_package: str = "",
+    ) -> None:
         self.plugin = plugin
         self.host = str(host or "127.0.0.1").strip() or "127.0.0.1"
         self.requested_port = max(1, min(int(port or 6321), 65535))
         self.port = self.requested_port
         self.web_root = Path(web_root)
+        self.resource_packages = tuple(
+            dict.fromkeys(
+                package
+                for package in (
+                    str(resource_package or "").strip(),
+                    "astrbot_plugin_together_companion",
+                    "data.plugins.astrbot_plugin_together_companion",
+                )
+                if package
+            )
+        )
+        self._packaged_asset_cache: dict[str, bytes] = {}
         self._runner = None
         self._site = None
         self._proxy_session = None
@@ -53,6 +76,16 @@ class TogetherRoomServer:
             return
         if web is None:
             raise RuntimeError("缺少 aiohttp，无法启动实时房间服务")
+
+        missing_assets = [
+            name for name in self.REQUIRED_WEB_ASSETS if not self._web_asset_available(name)
+        ]
+        if missing_assets:
+            raise RuntimeError(
+                "房间静态资源不完整，缺少："
+                + "、".join(missing_assets)
+                + f"；已检查目录 {self.web_root} 和包资源 {', '.join(self.resource_packages)}"
+            )
 
         app = web.Application(client_max_size=self.MAX_WEBSOCKET_MESSAGE_BYTES)
         app.router.add_get("/", self._serve_index)
@@ -134,25 +167,114 @@ class TogetherRoomServer:
             )
         return headers
 
+    def _filesystem_web_asset(self, name: str) -> Path | None:
+        filename = str(name or "")
+        if filename not in self.REQUIRED_WEB_ASSETS:
+            return None
+        candidates = [self.web_root / filename]
+        plugin_root = Path(getattr(self.plugin, "plugin_root", self.web_root.parent))
+        candidates.extend(
+            (
+                plugin_root / "web" / filename,
+                plugin_root / "astrbot_plugin_together_companion" / "web" / filename,
+                plugin_root.parent / "astrbot_plugin_together_companion" / "web" / filename,
+            )
+        )
+        for parent in (plugin_root, plugin_root.parent):
+            try:
+                candidates.extend(
+                    path / filename
+                    for path in parent.glob("astrbot_plugin_together_companion*/web")
+                )
+            except OSError:
+                continue
+        seen: set[str] = set()
+        for candidate in candidates:
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                if candidate.is_file():
+                    return candidate
+            except OSError:
+                continue
+        return None
+
+    def _packaged_web_asset(self, name: str) -> bytes | None:
+        filename = str(name or "")
+        if filename not in self.REQUIRED_WEB_ASSETS:
+            return None
+        cached = self._packaged_asset_cache.get(filename)
+        if cached is not None:
+            return cached
+        for package in self.resource_packages:
+            try:
+                asset = importlib_resources.files(package).joinpath("web").joinpath(filename)
+                if not asset.is_file():
+                    continue
+                content = asset.read_bytes()
+            except (
+                AttributeError,
+                ImportError,
+                ModuleNotFoundError,
+                FileNotFoundError,
+                OSError,
+                TypeError,
+            ):
+                continue
+            self._packaged_asset_cache[filename] = content
+            return content
+        return None
+
+    def _web_asset_available(self, name: str) -> bool:
+        return self._filesystem_web_asset(name) is not None or self._packaged_web_asset(name) is not None
+
+    def _web_asset_diagnostic(self, name: str) -> str:
+        packages = ", ".join(self.resource_packages) or "未配置"
+        return f"资源={name} 文件目录={self.web_root} 包资源={packages}"
+
     async def _serve_index(self, request):
-        path = self.web_root / "index.html"
-        if not path.is_file():
-            raise web.HTTPNotFound(text="房间页面不存在")
-        return web.FileResponse(
-            path,
+        path = self._filesystem_web_asset("index.html")
+        if path is not None:
+            return web.FileResponse(
+                path,
+                headers=self._security_headers("text/html; charset=utf-8"),
+            )
+        content = self._packaged_web_asset("index.html")
+        if content is None:
+            diagnostic = self._web_asset_diagnostic("index.html")
+            logger.error("[TogetherCompanion] 房间页面资源缺失: %s", diagnostic)
+            raise web.HTTPNotFound(text="房间页面不存在，静态资源不完整；请检查插件日志")
+        return web.Response(
+            body=content,
+            content_type="text/html",
+            charset="utf-8",
             headers=self._security_headers("text/html; charset=utf-8"),
         )
 
     async def _serve_asset(self, request):
-        allowed = {"app.css", "app.js", "lucide.min.js"}
+        allowed = set(self.REQUIRED_WEB_ASSETS) - {"index.html"}
         name = str(request.match_info.get("name") or "")
         if name not in allowed:
             raise web.HTTPNotFound()
-        path = self.web_root / name
-        if not path.is_file():
+        path = self._filesystem_web_asset(name)
+        if path is not None:
+            content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            return web.FileResponse(path, headers=self._security_headers(content_type))
+        content = self._packaged_web_asset(name)
+        if content is None:
+            logger.error(
+                "[TogetherCompanion] 房间静态资源缺失: %s",
+                self._web_asset_diagnostic(name),
+            )
             raise web.HTTPNotFound()
-        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        return web.FileResponse(path, headers=self._security_headers(content_type))
+        content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        return web.Response(
+            body=content,
+            content_type=content_type,
+            headers=self._security_headers(content_type),
+        )
 
     async def _serve_avatar(self, request):
         path = await self.plugin.resolve_avatar_path()

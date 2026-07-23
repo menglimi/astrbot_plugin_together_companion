@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+import tempfile
 import unittest
 
 from astrbot_stubs import install_astrbot_stubs
@@ -41,6 +42,37 @@ class RoomOriginTests(unittest.TestCase):
         self.assertNotIn("unpkg.com", policy)
         self.assertIn('/assets/lucide.min.js', page)
         self.assertNotIn("https://unpkg.com", page)
+
+    def test_packaged_resources_fallback_when_filesystem_web_root_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            missing_root = Path(temporary) / "missing-web"
+            server = TogetherRoomServer(
+                SimpleNamespace(plugin_root=Path(temporary) / "missing-plugin"),
+                host="127.0.0.1",
+                port=6321,
+                web_root=missing_root,
+                resource_package="astrbot_plugin_together_companion",
+            )
+
+            self.assertIsNone(server._filesystem_web_asset("index.html"))
+            self.assertIn(b'class="app-shell"', server._packaged_web_asset("index.html"))
+            self.assertTrue(all(server._web_asset_available(name) for name in server.REQUIRED_WEB_ASSETS))
+
+    def test_nested_docker_plugin_layout_is_discovered(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            plugin_root = Path(temporary)
+            nested_web = plugin_root / "astrbot_plugin_together_companion-main" / "web"
+            nested_web.mkdir(parents=True)
+            nested_index = nested_web / "index.html"
+            nested_index.write_text("<!doctype html>", encoding="utf-8")
+            server = TogetherRoomServer(
+                SimpleNamespace(plugin_root=plugin_root),
+                host="127.0.0.1",
+                port=6321,
+                web_root=plugin_root / "missing-web",
+            )
+
+            self.assertEqual(nested_index, server._filesystem_web_asset("index.html"))
 
     def test_different_local_origin_is_rejected(self) -> None:
         request = self._request("http://localhost:9000")

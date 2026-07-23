@@ -29,6 +29,12 @@ def test_release_zip_is_portable_and_excludes_development_files(tmp_path: Path) 
 
     assert "pages/一起房间/index.html" in names
     assert "pages/一起房间/lucide.min.js" in names
+    assert {
+        "web/index.html",
+        "web/app.css",
+        "web/app.js",
+        "web/lucide.min.js",
+    }.issubset(names)
     assert all("\\" not in name for name in names)
     assert all(not PurePosixPath(name).is_absolute() for name in names)
     assert all(".." not in PurePosixPath(name).parts for name in names)
