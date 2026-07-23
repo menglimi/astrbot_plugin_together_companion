@@ -110,9 +110,13 @@ class RoomSession:
     call_active: bool = False
     call_last_user_activity: float = 0.0
     call_last_proactive_at: float = 0.0
+    call_idle_check_count: int = 0
     call_camera_frame: str = ""
     call_camera_updated_at: float = 0.0
     call_action_token: str = field(default_factory=lambda: secrets.token_urlsafe(18))
+    client_local_time: str = ""
+    client_timezone: str = ""
+    client_time_updated_at: float = 0.0
     work_context: dict[str, Any] = field(default_factory=dict)
     work_context_updated_at: float = 0.0
     # 工作协同的执行状态由模型在每轮回复中维护，避免只依赖瞬时屏幕摘要。

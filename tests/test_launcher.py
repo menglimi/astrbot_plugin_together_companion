@@ -44,6 +44,7 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("请选择对话模型（必选）", script)
         self.assertIn('name="watch.comment_interval_seconds"', page)
         self.assertIn('name="speech.realtime_duplex_enabled"', page)
+        self.assertIn('name="speech.direct_multilingual_tts"', page)
         self.assertIn('name="speech.tts_timeout_seconds"', page)
         self.assertIn(
             'name="speech.tts_volume_percent" type="range" min="0" max="100" step="5" value="100"',
@@ -472,6 +473,7 @@ class PageConfigApiTests(unittest.IsolatedAsyncioTestCase):
                 "speech.tts_timeout_seconds": 999,
                 "speech.tts_volume_percent": 999,
                 "speech.realtime_duplex_enabled": "true",
+                "speech.direct_multilingual_tts": "true",
                 "unknown.key": "ignored",
             }
         )
@@ -483,6 +485,7 @@ class PageConfigApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(180, updates["speech.tts_timeout_seconds"])
         self.assertEqual(100, updates["speech.tts_volume_percent"])
         self.assertTrue(updates["speech.realtime_duplex_enabled"])
+        self.assertTrue(updates["speech.direct_multilingual_tts"])
         self.assertNotIn("unknown.key", updates)
 
         invalid_volume = plugin._validate_page_settings({"speech.tts_volume_percent": "loud"})

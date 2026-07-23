@@ -381,11 +381,11 @@
   function scheduleCallIdleTimer() {
     clearCallIdleTimer();
     if (!state.connected || !state.callActive || state.mode !== "call" || state.botSpeaking) return;
-    if (!state.room?.call?.proactive_enabled) return;
+    if (!(state.room?.call?.proactive_enabled || state.room?.call?.model_hangup_enabled)) return;
     const idleSeconds = Math.max(60, Math.min(900, Number(state.room.call.idle_seconds) || 120));
     state.callIdleTimer = window.setTimeout(() => {
       if (state.callActive && state.mode === "call" && !state.botSpeaking) {
-        send({ type: "call_idle" });
+        send({ type: "call_idle", ...clientTimeContext() });
         scheduleCallIdleTimer();
       }
     }, idleSeconds * 1000);
@@ -1693,6 +1693,7 @@
           mime: blob.type || "audio/webm",
           data,
           frame,
+          ...clientTimeContext(),
         });
       });
       state.recorder = recorder;
@@ -1777,6 +1778,7 @@
       utterance_id: utteranceId,
       state: playerState(),
       frame,
+      ...clientTimeContext(),
     });
     if (sent) {
       $("#messageInput").value = "";
@@ -1787,6 +1789,27 @@
   function newUtteranceId() {
     if (window.crypto?.randomUUID) return window.crypto.randomUUID();
     return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+  }
+
+  function clientTimeContext() {
+    const now = new Date();
+    let clientTimezone = "";
+    try {
+      clientTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+    } catch { /* older WebView */ }
+    const pad = (value) => String(value).padStart(2, "0");
+    const offsetMinutes = -now.getTimezoneOffset();
+    const offsetSign = offsetMinutes >= 0 ? "+" : "-";
+    const offsetHours = pad(Math.floor(Math.abs(offsetMinutes) / 60));
+    const offsetRemainder = pad(Math.abs(offsetMinutes) % 60);
+    const clientLocalTime = [
+      `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`,
+      `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}${offsetSign}${offsetHours}:${offsetRemainder}`,
+    ].join("T");
+    return {
+      client_local_time: clientLocalTime,
+      client_timezone: clientTimezone,
+    };
   }
 
   function revealSpeechMessage(message) {

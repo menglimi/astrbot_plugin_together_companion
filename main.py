@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+from datetime import datetime
 from difflib import SequenceMatcher
 import ipaddress
 import inspect
@@ -60,7 +61,7 @@ def get_together_companion_bridge() -> TogetherCompanionTokenBridge | None:
 BASE_REALTIME_PROMPT = """
 你正在与主要用户实时共处，而不是在普通聊天窗口里写长回复。
 像自然通话一样说话：优先使用一到三句简短、口语化、能直接听懂的话；不要使用 Markdown、列表、标题、括号舞台动作或结尾表情。
-实时房间会在回复生成后独立处理语种转换和语音合成；这里只输出用户最终应看到的自然聊天文字，不要输出 <pc_tts>、<tts>、[whispering]、[soft] 等内部语音标签，也不要为了语音再重复一份同义正文。
+实时房间默认会在回复生成后独立处理语种转换和语音合成；这里只输出用户最终应看到的自然聊天文字，不要输出 <pc_tts>、<tts>、[whispering]、[soft] 等内部语音标签，也不要为了语音再重复一份同义正文。只有后续系统提示明确启用“通话外语语音直出”时，才按该提示输出一个 <pc_tts> 语音块。
 不要每句话都称呼用户，不要播报“我正在分析”，不要复述用户刚说过的话。允许停顿，也允许在没有必要延伸时简短收住。
 结合当前人格、精力、情绪和双方关系自然调整语气：低精力时可以更轻、更短，用户情绪明显时先贴合感受，再决定是否延伸话题。句数是自然倾向，不要为了凑长度截断完整意思。
 这里的媒体、图片和视频属于当前播放来源。用户和你都是观看者；除非用户明确说明，否则绝不能把作品误认成用户制作的内容。
@@ -91,6 +92,21 @@ CALL_ROOM_CONTEXT_PROMPT = """
 你当前位于实时通话房间，但语音通话尚未接通。用户此时可能正在用文字输入；不要声称已经听到了麦克风声音，也不要把尚未接通说成正在通话。
 """.strip()
 
+CLIENT_TIME_CONTEXT_PROMPT = """
+本轮由用户当前浏览器上报的本地时间是 {local_time}，时区是 {timezone}。这是判断“现在几点”、早晚、日期和是否临近休息时间的优先依据；陪伴场景中的日程、状态或缓存时间与它冲突时，以这里的时间为准。
+只在与用户话题自然相关时提及时间。不要仅凭时间主动催促用户休息，也不要把角色日程时间、服务端时间或模型自身知识当成用户当前时间。
+""".strip()
+
+UNKNOWN_CLIENT_TIME_PROMPT = """
+本轮没有收到可确认的用户设备本地时间。陪伴场景中的时间可能是角色活动时间或缓存资料；除非用户明确提供当前时间，否则不要自行猜测具体几点、早晚或据此催促用户休息。
+""".strip()
+
+CALL_DIRECT_SPEECH_PROMPT = """
+当前已启用“通话外语语音直出”，TTS 目标语种是{language_label}（{language_code}）。这是当前通话对基础规则中“不要输出语音标签”的唯一例外。
+当用户可见正文不是{language_label}时，每次正常回复直接同时生成两部分，格式必须是：<pc_tts>适合直接朗读的{language_label}口语</pc_tts>用户可见正文。语音块与正文含义、语气和信息必须一致；语音块不要解释翻译过程，不要包含 Markdown，也不要再嵌套其他 TTS 标签。用户可见正文继续使用当前对话自然需要的语言。
+如果用户可见正文已经是{language_label}，可以只输出正文，避免重复。如果你无法可靠生成对应{language_label}，也只输出正文；系统会自动回退到原有语种转换链路，不要为了满足格式编造内容。
+""".strip()
+
 CALL_HANGUP_CONTEXT_PROMPT = """
 你可以像真实通话中的一方一样，自主判断是否自然结束当前语音连接。只有在用户明确要求结束或告别、双方话题已经自然收束且此刻适合离开，或你结合人格、关系与当前情境确实有清楚自然的结束理由时，才这样做。
 短暂沉默、没有立刻想到话题、没听清、意见不合、情绪波动或任何不确定情况，都不能单独作为挂断理由；此时继续正常交流。
@@ -115,7 +131,14 @@ CALL_PROACTIVE_PROMPT = """
 结合当前人格、双方关系、最近对话、时间场景和相关共同记忆，判断此刻是否适合自然找一个话题。
 适合开口时，像熟悉的人自然想到什么一样说一到两句：可以轻轻延续之前的话题、分享一个贴近当下的联想或随口问一句；不要播报沉默时长，不要说“你怎么不说话”，不要盘问、连续抛问题，也不要为了完成任务强行提旧事。
 如果用户可能正在忙、刚结束一个完整话题、没有自然切入点，或继续安静更舒服，就保持沉默。
-如果双方此前已经明确告别、话题自然结束，并且结合人格与关系确实适合由你结束语音连接，可以先给一句自然收尾并选择 hangup；不能只因为用户沉默了一段时间就挂断。
+首次或短暂沉默不能单独成为挂断理由。如果系统明确说明这是连续第三次或之后的静默判断，表示期间用户一直没有任何新输入；此时可以把“用户可能已经离开或睡着”作为合理依据之一，结合此前话题是否收束、当前时间、人格与双方关系，自主决定继续等待、自然开口或先说一句温和收尾再选择 hangup。长时间静默允许支持挂断，但不要求到点强制挂断。
+只输出一个 JSON 对象，不要使用 Markdown：{"speak":false,"utterance":"","action":"continue"}
+action 只能是 continue 或 hangup；hangup 时 speak 必须为 true 且 utterance 必须包含自然收尾。
+""".strip()
+
+CALL_IDLE_HANGUP_PROMPT = """
+这是语音通话中的内部静默结束判断。当前已关闭“安静时主动找话题”，所以不要为了填补沉默另起话题。
+首次或短暂沉默时保持安静并选择 continue。如果系统明确说明这是连续第三次或之后的静默判断，表示期间用户一直没有任何新输入；此时可以结合此前话题是否收束、当前时间、人格与双方关系，自主判断用户是否可能已经离开或睡着。适合结束时先给一句温和、自然且不责怪用户的收尾，再选择 hangup；不适合时继续安静。长时间静默允许支持挂断，但不要求到点强制挂断。
 只输出一个 JSON 对象，不要使用 Markdown：{"speak":false,"utterance":"","action":"continue"}
 action 只能是 continue 或 hangup；hangup 时 speak 必须为 true 且 utterance 必须包含自然收尾。
 """.strip()
@@ -282,6 +305,7 @@ class TogetherCompanionPlugin(Star):
         self.browser_language = self._cfg_str("speech.browser_language", "zh-CN") or "zh-CN"
         self.tts_provider_id = self._cfg_str("speech.tts_provider_id", "")
         self.browser_tts_fallback = self._cfg_bool("speech.browser_tts_fallback", True)
+        self.direct_multilingual_tts = self._cfg_bool("speech.direct_multilingual_tts", True)
         self.tts_timeout_seconds = _clamp_int(self._cfg("speech.tts_timeout_seconds", 60), 60, 15, 180)
         self.tts_volume_ratio = _clamp_float(
             self._cfg("speech.tts_volume_percent", 100),
@@ -872,6 +896,7 @@ class TogetherCompanionPlugin(Star):
             "speech.browser_language": "zh-CN",
             "speech.tts_provider_id": "",
             "speech.browser_tts_fallback": True,
+            "speech.direct_multilingual_tts": True,
             "speech.tts_timeout_seconds": 60,
             "speech.tts_volume_percent": 100,
             "speech.realtime_duplex_enabled": False,
@@ -903,6 +928,7 @@ class TogetherCompanionPlugin(Star):
             "conversation.record_visible_turns",
             "speech.stt_correction_enabled",
             "speech.browser_tts_fallback",
+            "speech.direct_multilingual_tts",
             "speech.realtime_duplex_enabled",
             "watch.prepare_knowledge",
             "watch.auto_comment",
@@ -970,6 +996,7 @@ class TogetherCompanionPlugin(Star):
         self.browser_language = self._cfg_str("speech.browser_language", "zh-CN") or "zh-CN"
         self.tts_provider_id = self._cfg_str("speech.tts_provider_id", "")
         self.browser_tts_fallback = self._cfg_bool("speech.browser_tts_fallback", True)
+        self.direct_multilingual_tts = self._cfg_bool("speech.direct_multilingual_tts", True)
         self.tts_timeout_seconds = _clamp_int(self._cfg("speech.tts_timeout_seconds", 60), 60, 15, 180)
         self.tts_volume_ratio = _clamp_float(
             self._cfg("speech.tts_volume_percent", 100),
@@ -2153,11 +2180,96 @@ class TogetherCompanionPlugin(Star):
             logger.debug("[TogetherCompanion] 读取陪伴 TTS 配置失败: %s", exc)
             return {}
 
+    @staticmethod
+    def _direct_voice_language(config: Any) -> tuple[str, str]:
+        if not isinstance(config, dict) or config.get("available") is False:
+            return "", ""
+        voice_language = str(config.get("voice_language") or "").strip().lower()
+        browser_language = str(config.get("browser_language") or "").strip().lower()
+        aliases = {
+            "ja": ("ja-JP", "日语"),
+            "jp": ("ja-JP", "日语"),
+            "japanese": ("ja-JP", "日语"),
+            "ja-jp": ("ja-JP", "日语"),
+            "en": ("en-US", "英语"),
+            "eng": ("en-US", "英语"),
+            "english": ("en-US", "英语"),
+            "en-us": ("en-US", "英语"),
+            "en-gb": ("en-GB", "英语"),
+        }
+        direct = aliases.get(voice_language)
+        if direct:
+            return direct
+        if browser_language.startswith("ja"):
+            return "ja-JP", "日语"
+        if browser_language.startswith("en"):
+            return ("en-GB", "英语") if browser_language.startswith("en-gb") else ("en-US", "英语")
+        return "", ""
+
+    def _call_direct_speech_prompt(self, room: RoomSession) -> str:
+        if (
+            not getattr(self, "direct_multilingual_tts", True)
+            or room.mode != "call"
+            or not room.call_active
+        ):
+            return ""
+        config_getter = getattr(self, "_companion_realtime_voice_config", None)
+        if not callable(config_getter):
+            return ""
+        try:
+            voice_config = config_getter()
+        except Exception as exc:
+            logger.debug(
+                "[TogetherCompanion] 通话外语语音直出读取配置失败，回退原有 TTS 链路: %s",
+                exc,
+            )
+            return ""
+        language_code, language_label = self._direct_voice_language(voice_config)
+        if not language_code:
+            return ""
+        return CALL_DIRECT_SPEECH_PROMPT.format(
+            language_code=language_code,
+            language_label=language_label,
+        )
+
+    @staticmethod
+    def _update_client_time_context(room: RoomSession, payload: dict[str, Any]) -> None:
+        raw_time = _single_line(payload.get("client_local_time"), 80)
+        raw_timezone = _single_line(payload.get("client_timezone"), 64)
+        if not raw_time:
+            return
+        try:
+            parsed = datetime.fromisoformat(raw_time.replace("Z", "+00:00"))
+            if parsed.tzinfo is None or abs(parsed.timestamp() - time.time()) > 30 * 60:
+                return
+        except (OverflowError, TypeError, ValueError):
+            return
+        timezone_name = (
+            raw_timezone
+            if re.fullmatch(r"[A-Za-z0-9_+./-]{1,64}", raw_timezone)
+            else str(parsed.tzinfo or "")[:32]
+        )
+        room.client_local_time = parsed.isoformat(timespec="seconds")
+        room.client_timezone = timezone_name or "未提供"
+        room.client_time_updated_at = time.monotonic()
+
+    @staticmethod
+    def _client_time_prompt(room: RoomSession) -> str:
+        local_time = str(getattr(room, "client_local_time", "") or "")
+        updated_at = float(getattr(room, "client_time_updated_at", 0.0) or 0.0)
+        if local_time and updated_at and time.monotonic() - updated_at <= 15 * 60:
+            return CLIENT_TIME_CONTEXT_PROMPT.format(
+                local_time=local_time,
+                timezone=str(getattr(room, "client_timezone", "") or "未提供"),
+            )
+        return UNKNOWN_CLIENT_TIME_PROMPT
+
     async def handle_room_payload(self, room: RoomSession, payload: dict[str, Any]) -> None:
         message_type = _single_line(payload.get("type"), 40).lower()
         if message_type == "call_state":
             room.call_active = bool(payload.get("active"))
             room.call_last_user_activity = time.monotonic()
+            room.call_idle_check_count = 0
             if not room.call_active:
                 room.call_last_proactive_at = 0.0
                 room.update_call_camera("")
@@ -2176,9 +2288,17 @@ class TogetherCompanionPlugin(Star):
         if message_type == "call_activity":
             if room.call_active:
                 room.call_last_user_activity = time.monotonic()
+                room.call_idle_check_count = 0
             return
         if message_type == "call_idle":
-            if not room.call_active or room.mode != "call" or not self.call_proactive_enabled:
+            self._update_client_time_context(room, payload)
+            proactive_enabled = bool(getattr(self, "call_proactive_enabled", True))
+            hangup_enabled = bool(getattr(self, "model_hangup_enabled", True))
+            if (
+                not room.call_active
+                or room.mode != "call"
+                or not (proactive_enabled or hangup_enabled)
+            ):
                 return
             now = time.monotonic()
             idle_for = now - float(room.call_last_user_activity or now)
@@ -2189,7 +2309,7 @@ class TogetherCompanionPlugin(Star):
             if isinstance(room.generation_task, asyncio.Task) and not room.generation_task.done():
                 return
             room.call_last_proactive_at = now
-            room.call_last_user_activity = now
+            room.call_idle_check_count += 1
             self._start_room_task(
                 room,
                 self._generate_call_proactive(room, idle_seconds=int(idle_for)),
@@ -2292,8 +2412,10 @@ class TogetherCompanionPlugin(Star):
         if message_type == "user_text":
             text = str(payload.get("text") or "").strip()[:4000]
             if text:
+                self._update_client_time_context(room, payload)
                 if room.call_active and room.mode == "call":
                     room.call_last_user_activity = time.monotonic()
+                    room.call_idle_check_count = 0
                 input_source = _single_line(payload.get("source"), 40).lower()
                 utterance_id = (
                     _single_line(payload.get("utterance_id"), 80)
@@ -2337,8 +2459,10 @@ class TogetherCompanionPlugin(Star):
                     self._start_room_task(room, self._reply_to_user(room, text, image_data_url=frame))
             return
         if message_type == "audio_utterance":
+            self._update_client_time_context(room, payload)
             if room.call_active and room.mode == "call":
                 room.call_last_user_activity = time.monotonic()
+                room.call_idle_check_count = 0
             audio_bytes, mime_type = self._decode_audio_payload(payload)
             if not audio_bytes:
                 await self.send_room_error(room, "没有收到可识别的音频", code="empty_audio")
@@ -2747,8 +2871,10 @@ class TogetherCompanionPlugin(Star):
     async def _generate_call_proactive(self, room: RoomSession, *, idle_seconds: int) -> None:
         if not room.call_active or room.mode != "call":
             return
+        idle_check_count = max(1, int(getattr(room, "call_idle_check_count", 0) or 0))
         prompt = (
-            f"用户已经安静约 {max(0, int(idle_seconds))} 秒。"
+            f"用户已经连续安静约 {max(0, int(idle_seconds))} 秒，"
+            f"这是连续静默第 {idle_check_count} 次判断；用户产生新输入或你本轮实际开口后，后续判断会重新计时。"
             "请结合最近对话和当前陪伴场景判断是否自然开口；只输出系统约定的 JSON。"
         )
         camera_frame = room.recent_call_camera_frame()
@@ -2773,6 +2899,14 @@ class TogetherCompanionPlugin(Star):
         if not room.call_active or room.mode != "call":
             return
         decision = self._parse_call_proactive_decision(raw)
+        logger.info(
+            "[TogetherCompanion] 通话静默判断: room=%s idle=%ss check=%s speak=%s action=%s",
+            room.room_id[:10],
+            max(0, int(idle_seconds)),
+            idle_check_count,
+            bool(decision.get("speak")),
+            decision.get("action") or "continue",
+        )
         if not decision.get("speak"):
             return
         comment = _single_line(decision.get("utterance"), 500)
@@ -2794,6 +2928,7 @@ class TogetherCompanionPlugin(Star):
         )
         if room.call_active and not playback_action_queued:
             room.call_last_user_activity = time.monotonic()
+            room.call_idle_check_count = 0
             await self.send_room_payload(room, {"type": "status", "state": "listening", "text": "正在听"})
 
     async def _generate_work_progress_check(self, room: RoomSession) -> None:
@@ -3393,6 +3528,11 @@ class TogetherCompanionPlugin(Star):
                 if room.call_active
                 else CALL_ROOM_CONTEXT_PROMPT
             )
+        direct_speech_prompt = (
+            "" if call_proactive else self._call_direct_speech_prompt(room)
+        )
+        if direct_speech_prompt:
+            parts.append(direct_speech_prompt)
         if (
             room.call_active
             and getattr(self, "model_hangup_enabled", True)
@@ -3405,11 +3545,14 @@ class TogetherCompanionPlugin(Star):
         if watch_comment:
             parts.append(WATCH_COMMENT_PROMPT)
         elif call_proactive:
-            parts.append(
-                CALL_PROACTIVE_PROMPT
-                if getattr(self, "model_hangup_enabled", True)
-                else CALL_PROACTIVE_CONTINUE_PROMPT
-            )
+            if getattr(self, "model_hangup_enabled", True):
+                parts.append(
+                    CALL_PROACTIVE_PROMPT
+                    if getattr(self, "call_proactive_enabled", True)
+                    else CALL_IDLE_HANGUP_PROMPT
+                )
+            else:
+                parts.append(CALL_PROACTIVE_CONTINUE_PROMPT)
         if input_source in {"browser_stt", "astrbot_stt"}:
             parts.append(
                 "当前用户文字来自语音识别。你的准确名称是"
@@ -3423,6 +3566,8 @@ class TogetherCompanionPlugin(Star):
         scene_text = self._format_scene(scene)
         if scene_text:
             parts.append(f"当前陪伴场景：{scene_text}")
+        if room.mode == "call":
+            parts.append(self._client_time_prompt(room))
         if room.mode == "watch":
             media = self._format_media_state(room.media_state)
             parts.append(f"当前共同观影状态：{media or '用户已进入观影房间，但尚未提供具体画面。'}")
@@ -4713,6 +4858,14 @@ class TogetherCompanionPlugin(Star):
 
         spoken = self._spoken_text(text)
         _display_spoken, visible_text = self._split_tts_payload(display_text or text)
+        direct_model_speech = bool(
+            room.mode == "call"
+            and re.search(
+                r"<(?:pc[_-]?tts|t{2,}s)\b[^>]*>.*?</(?:pc[_-]?tts|t{2,}s)\s*>",
+                str(text or ""),
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+        )
         if room.mode == "watch" and not room.watch_tts_enabled:
             if visible_text:
                 await self.send_room_payload(
@@ -4747,13 +4900,15 @@ class TogetherCompanionPlugin(Star):
             return bool(action)
         synthesis_started_at = time.perf_counter()
         logger.info(
-            "[TogetherCompanion] TTS 开始: room=%s mode=%s provider=%s bridge=%s language=%s chars=%s timeout=%ss",
+            "[TogetherCompanion] TTS 开始: room=%s mode=%s provider=%s bridge=%s language=%s text_source=%s spoken_chars=%s visible_chars=%s timeout=%ss",
             room.room_id[:10],
             room.mode,
             self._provider_label(provider),
             bool(callable(bridge)),
             browser_language,
+            "llm_direct" if direct_model_speech else "plain_reply",
             len(spoken),
+            len(visible_text),
             timeout_seconds,
         )
         await self.send_room_payload(room, {"type": "status", "state": "speaking", "text": "正在说话"})

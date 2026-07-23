@@ -5,6 +5,7 @@ import asyncio
 import re
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -30,6 +31,157 @@ class TogetherTtsBridgeTests(unittest.IsolatedAsyncioTestCase):
     def test_realtime_prompt_delegates_tts_markup_to_postprocessing(self) -> None:
         self.assertIn("独立处理语种转换和语音合成", BASE_REALTIME_PROMPT)
         self.assertIn("不要输出 <pc_tts>、<tts>", BASE_REALTIME_PROMPT)
+        self.assertIn("只有后续系统提示明确启用", BASE_REALTIME_PROMPT)
+
+    def test_connected_call_enables_direct_foreign_speech_from_new_voice_config(self) -> None:
+        plugin = TogetherCompanionPlugin.__new__(TogetherCompanionPlugin)
+        plugin.direct_multilingual_tts = True
+        plugin._companion_realtime_voice_config = lambda: {
+            "available": True,
+            "voice_language": "ja",
+            "browser_language": "ja-JP",
+        }
+        room = RoomSession("room", "ticket", "call", "123", None)
+        room.call_active = True
+
+        prompt = plugin._call_direct_speech_prompt(room)
+
+        self.assertIn("通话外语语音直出", prompt)
+        self.assertIn("日语（ja-JP）", prompt)
+        self.assertIn("<pc_tts>", prompt)
+        self.assertIn("自动回退到原有语种转换链路", prompt)
+
+    def test_old_voice_config_and_plain_reply_keep_compatibility_fallbacks(self) -> None:
+        plugin = TogetherCompanionPlugin.__new__(TogetherCompanionPlugin)
+        plugin.direct_multilingual_tts = True
+        plugin._companion_realtime_voice_config = lambda: {"browser_language": "en-GB"}
+        room = RoomSession("room", "ticket", "call", "123", None)
+        room.call_active = True
+
+        self.assertIn("英语（en-GB）", plugin._call_direct_speech_prompt(room))
+        room.call_active = False
+        self.assertEqual("", plugin._call_direct_speech_prompt(room))
+        room.call_active = True
+        plugin.direct_multilingual_tts = False
+        self.assertEqual("", plugin._call_direct_speech_prompt(room))
+
+        spoken, visible = plugin._split_tts_payload("继续使用原有中文回复。")
+        self.assertEqual("继续使用原有中文回复。", spoken)
+        self.assertEqual("继续使用原有中文回复。", visible)
+
+    def test_unavailable_or_chinese_voice_config_keeps_original_pipeline(self) -> None:
+        plugin = TogetherCompanionPlugin.__new__(TogetherCompanionPlugin)
+        plugin.direct_multilingual_tts = True
+        room = RoomSession("room", "ticket", "call", "123", None)
+        room.call_active = True
+
+        plugin._companion_realtime_voice_config = lambda: {"available": False}
+        self.assertEqual("", plugin._call_direct_speech_prompt(room))
+
+        plugin._companion_realtime_voice_config = lambda: {
+            "voice_language": "zh",
+            "browser_language": "zh-CN",
+        }
+        self.assertEqual("", plugin._call_direct_speech_prompt(room))
+
+        def broken_config():
+            raise RuntimeError("old companion API failed")
+
+        plugin._companion_realtime_voice_config = broken_config
+        self.assertEqual("", plugin._call_direct_speech_prompt(room))
+
+    async def test_connected_call_system_prompt_includes_direct_speech_contract(self) -> None:
+        plugin = TogetherCompanionPlugin.__new__(TogetherCompanionPlugin)
+        plugin.direct_multilingual_tts = True
+        plugin.model_hangup_enabled = False
+        plugin.custom_system_prompt = ""
+        plugin.enable_memory_context = False
+        plugin._companion_realtime_voice_config = lambda: {
+            "available": True,
+            "voice_language": "ja",
+            "browser_language": "ja-JP",
+        }
+        plugin._companion_scene_cached = lambda _user_id: {}
+
+        async def persona_prompt():
+            return "你是测试人格。"
+
+        plugin._persona_prompt_cached = persona_prompt
+        room = RoomSession("room", "ticket", "call", "123", None)
+        room.call_active = True
+
+        prompt = await plugin._build_system_prompt(room)
+
+        self.assertIn("已经接通实时语音通话", prompt)
+        self.assertIn("通话外语语音直出", prompt)
+        self.assertIn("<pc_tts>适合直接朗读的日语口语</pc_tts>用户可见正文", prompt)
+
+        proactive_prompt = await plugin._build_system_prompt(
+            room,
+            query="用户已经安静约 120 秒",
+            call_proactive=True,
+        )
+        self.assertIn("只输出一个 JSON 对象", proactive_prompt)
+        self.assertNotIn("通话外语语音直出，TTS 目标语种", proactive_prompt)
+
+    async def test_call_prompt_prefers_fresh_client_local_time(self) -> None:
+        plugin = TogetherCompanionPlugin.__new__(TogetherCompanionPlugin)
+        plugin.direct_multilingual_tts = False
+        plugin.model_hangup_enabled = False
+        plugin.custom_system_prompt = ""
+        plugin.enable_memory_context = False
+        plugin._companion_scene_cached = lambda _user_id: {
+            "date": "2026-07-24",
+            "time": "02:55",
+        }
+
+        async def persona_prompt():
+            return "你是测试人格。"
+
+        plugin._persona_prompt_cached = persona_prompt
+        room = RoomSession("room", "ticket", "call", "123", None)
+        client_now = datetime.now(timezone(timedelta(hours=8))).replace(microsecond=0)
+        plugin._update_client_time_context(
+            room,
+            {
+                "client_local_time": client_now.isoformat(),
+                "client_timezone": "Asia/Shanghai",
+            },
+        )
+
+        prompt = await plugin._build_system_prompt(room)
+
+        self.assertIn(client_now.isoformat(), prompt)
+        self.assertIn("Asia/Shanghai", prompt)
+        self.assertIn("以这里的时间为准", prompt)
+        self.assertIn("2026-07-24 02:55", prompt)
+
+    async def test_missing_or_untrusted_client_time_uses_soft_uncertainty_prompt(self) -> None:
+        plugin = TogetherCompanionPlugin.__new__(TogetherCompanionPlugin)
+        plugin.direct_multilingual_tts = False
+        plugin.model_hangup_enabled = False
+        plugin.custom_system_prompt = ""
+        plugin.enable_memory_context = False
+        plugin._companion_scene_cached = lambda _user_id: {}
+
+        async def persona_prompt():
+            return "你是测试人格。"
+
+        plugin._persona_prompt_cached = persona_prompt
+        room = RoomSession("room", "ticket", "call", "123", None)
+        plugin._update_client_time_context(
+            room,
+            {
+                "client_local_time": "2000-01-01T03:00:00+08:00",
+                "client_timezone": "<invalid>",
+            },
+        )
+
+        prompt = await plugin._build_system_prompt(room)
+
+        self.assertEqual("", room.client_local_time)
+        self.assertIn("没有收到可确认的用户设备本地时间", prompt)
+        self.assertIn("不要自行猜测具体几点", prompt)
 
     def test_voice_only_markup_has_clean_visible_fallback(self) -> None:
         spoken, visible = TogetherCompanionPlugin._split_tts_payload(
@@ -56,22 +208,27 @@ class TogetherTtsBridgeTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         plugin = self._plugin(provider, api)
-        room = RoomSession("room", "ticket", "watch", "123", None)
+        room = RoomSession("room", "ticket", "call", "123", None)
         try:
-            await plugin._synthesize_and_send(
-                room,
-                "一起看吧。",
-                display_text="一起看吧。",
-                display_source="reply",
-            )
+            with self.assertLogs("together-tests", level="INFO") as captured:
+                await plugin._synthesize_and_send(
+                    room,
+                    "<pc_tts>一緒に見よう。</pc_tts>一起看吧。",
+                    display_text="一起看吧。",
+                    display_source="reply",
+                )
 
             provider.get_audio.assert_not_awaited()
             api.synthesize_realtime_voice.assert_awaited_once_with(
-                "一起看吧。",
+                "一緒に見よう。",
                 tts_provider=provider,
                 source="together_companion",
                 play_local=False,
             )
+            log_text = "\n".join(captured.output)
+            self.assertIn("text_source=llm_direct", log_text)
+            self.assertIn("spoken_chars=7", log_text)
+            self.assertIn("visible_chars=5", log_text)
             audio_payload = next(
                 call.args[1]
                 for call in plugin.send_room_payload.await_args_list

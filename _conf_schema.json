@@ -107,13 +107,13 @@
         "description": "允许模型自然结束通话",
         "type": "bool",
         "default": true,
-        "hint": "模型可结合人格、关系与对话是否自然收束，自主在一句告别播放完成后结束当前语音连接；短暂沉默或没听清不会单独触发。"
+        "hint": "模型可结合人格、关系与对话是否自然收束，自主在一句告别播放完成后结束当前语音连接；连续多次静默且用户始终没有新输入时，也可判断用户可能已经离开并自然收尾。不会按固定倒计时强制挂断。"
       },
       "call_idle_seconds": {
-        "description": "主动找话题等待秒数",
+        "description": "通话静默判断间隔秒数",
         "type": "int",
         "default": 120,
-        "hint": "从用户或 Bot 最后一次说话结束后开始计算，范围 60 到 900 秒。"
+        "hint": "从用户或 Bot 最后一次说话结束后开始计算，范围 60 到 900 秒；连续静默判断会累计，用户产生新输入后重置。"
       },
       "sync_astrbot_conversation": {
         "description": "同步到 AstrBot 对话记录",
@@ -191,6 +191,12 @@
         "default": true,
         "hint": "没有可用 TTS 或服务端合成失败时，使用浏览器 SpeechSynthesis 朗读。"
       },
+      "direct_multilingual_tts": {
+        "description": "通话外语语音直出",
+        "type": "bool",
+        "default": true,
+        "hint": "通话接通且陪伴插件目标语种为日语或英语时，由主对话模型同时生成目标语种口语和可见正文，优先跳过额外翻译模型；格式不兼容时自动回退原有转换链路。"
+      },
       "tts_timeout_seconds": {
         "description": "TTS 最长等待时间（秒）",
         "type": "int",
@@ -200,7 +206,7 @@
           "max": 180,
           "step": 5
         },
-        "hint": "包含陪伴插件语种转换和语音合成；超时后立即回退文字或浏览器朗读。"
+        "hint": "主模型未直出目标语种时包含陪伴插件语种转换，之后等待语音合成；超时后立即回退文字或浏览器朗读。"
       },
       "tts_volume_percent": {
         "description": "TTS 播放音量百分比",

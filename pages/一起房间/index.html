@@ -126,6 +126,10 @@
             <span>浏览器 TTS 兜底</span>
             <input name="speech.browser_tts_fallback" type="checkbox" role="switch" />
           </label>
+          <label class="setting-row toggle-setting" title="目标语种为日语或英语时由对话模型直接生成朗读文本；不兼容时自动回退原有转换">
+            <span>通话外语语音直出</span>
+            <input name="speech.direct_multilingual_tts" type="checkbox" role="switch" />
+          </label>
           <label class="setting-row toggle-setting" title="用于后续分句流式 TTS、持续监听和语音插话，关闭时保持原有流程">
             <span>实时流式与全双工（实验性）</span>
             <input name="speech.realtime_duplex_enabled" type="checkbox" role="switch" />
@@ -163,7 +167,7 @@
           <label class="setting-row toggle-setting"><span>通话安静时主动找话题</span><input name="conversation.call_proactive_enabled" type="checkbox" role="switch" /></label>
           <label class="setting-row toggle-setting"><span>允许模型自然结束通话</span><input name="conversation.model_hangup_enabled" type="checkbox" role="switch" /></label>
           <label class="range-setting">
-            <span>主动找话题等待时间 <output data-output-for="conversation.call_idle_seconds"></output></span>
+            <span>通话静默判断间隔 <output data-output-for="conversation.call_idle_seconds"></output></span>
             <input name="conversation.call_idle_seconds" type="range" min="60" max="900" step="30" />
           </label>
           <label class="setting-row toggle-setting"><span>同步到 AstrBot 对话记录</span><input name="conversation.sync_astrbot_conversation" type="checkbox" role="switch" /></label>

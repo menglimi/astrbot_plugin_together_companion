@@ -190,6 +190,19 @@ class WebPlayerTests(unittest.TestCase):
         self.assertIn(".utterance-cancel", styles)
         self.assertNotIn("auto_confirm_ms", source)
 
+    def test_browser_sends_local_time_with_timezone_for_call_context(self) -> None:
+        source = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function clientTimeContext()", source)
+        self.assertIn("client_local_time: clientLocalTime", source)
+        self.assertIn("client_timezone: clientTimezone", source)
+        self.assertGreaterEqual(source.count("...clientTimeContext()"), 2)
+        self.assertIn('send({ type: "call_idle", ...clientTimeContext() })', source)
+        self.assertIn(
+            "state.room?.call?.proactive_enabled || state.room?.call?.model_hangup_enabled",
+            source,
+        )
+
     def test_custom_controls_replace_native_video_controls(self) -> None:
         parser = _VideoParser()
         parser.feed((ROOT / "web" / "index.html").read_text(encoding="utf-8"))
