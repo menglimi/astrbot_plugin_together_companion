@@ -113,6 +113,9 @@ class RoomSession:
     call_idle_check_count: int = 0
     call_camera_frame: str = ""
     call_camera_updated_at: float = 0.0
+    call_visual_events: list[str] = field(default_factory=list)
+    call_visual_last_at: float = 0.0
+    call_visual_last_signature: str = ""
     call_action_token: str = field(default_factory=lambda: secrets.token_urlsafe(18))
     client_local_time: str = ""
     client_timezone: str = ""
@@ -162,6 +165,23 @@ class RoomSession:
             return ""
         age = time.monotonic() - float(self.call_camera_updated_at or 0.0)
         return self.call_camera_frame if age <= max(1.0, float(max_age_seconds)) else ""
+
+    def append_call_visual_event(self, user_text: str, bot_text: str) -> None:
+        """Retain one semantic trace of a user-requested camera-assisted turn."""
+        user = " ".join(str(user_text or "").split())[:320]
+        bot = " ".join(str(bot_text or "").split())[:600]
+        if not user or not bot:
+            return
+        signature = f"{user}\n{bot}"
+        now = time.monotonic()
+        if signature == self.call_visual_last_signature and now - self.call_visual_last_at < 90:
+            return
+        self.call_visual_events.append(
+            f"用户在通话中结合主动开启的镜头问：{user}\nBot 基于本轮实时画面回应：{bot}"
+        )
+        self.call_visual_events = self.call_visual_events[-8:]
+        self.call_visual_last_signature = signature
+        self.call_visual_last_at = now
 
     def append_watch_event(
         self,

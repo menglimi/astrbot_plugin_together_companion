@@ -2830,8 +2830,16 @@ class TogetherCompanionPlugin(Star):
         )
         room.append_turn("user", text, history_turns=self.history_turns)
         room.append_turn("assistant", visible_response, history_turns=self.history_turns)
+        visual_context_used = bool(image_data_url and room.mode == "call")
+        if visual_context_used:
+            room.append_call_visual_event(text, visible_response)
         if self.sync_astrbot_conversation:
-            await self._record_astrbot_turns(room, text, visible_response)
+            await self._record_astrbot_turns(
+                room,
+                text,
+                visible_response,
+                visual_context_used=visual_context_used,
+            )
         if room.mode == "watch":
             room.append_watch_event(
                 "bot",
@@ -3868,7 +3876,14 @@ class TogetherCompanionPlugin(Star):
             cache[room.user_id] = (unified_origin, room.astrbot_conversation_id)
         return manager, unified_origin, room.astrbot_conversation_id
 
-    async def _record_astrbot_turns(self, room: RoomSession, user_text: str, bot_text: str) -> bool:
+    async def _record_astrbot_turns(
+        self,
+        room: RoomSession,
+        user_text: str,
+        bot_text: str,
+        *,
+        visual_context_used: bool = False,
+    ) -> bool:
         async with room.conversation_lock:
             try:
                 manager, unified_origin, conversation_id = await self._resolve_astrbot_conversation(room)
@@ -3876,9 +3891,16 @@ class TogetherCompanionPlugin(Star):
                 if not unified_origin or not conversation_id or not callable(add_pair):
                     logger.debug("[TogetherCompanion] 当前 AstrBot 版本不支持房间对话记录同步")
                     return False
+                recorded_user_text = str(user_text or "").strip()
+                if visual_context_used:
+                    recorded_user_text = (
+                        "【视频通话视觉上下文】本轮回答结合了用户主动开启的实时镜头画面；"
+                        "只同步文字语义，不保存画面。\n"
+                        f"用户：{recorded_user_text}"
+                    )
                 await add_pair(
                     conversation_id,
-                    {"role": "user", "content": str(user_text or "").strip()},
+                    {"role": "user", "content": recorded_user_text},
                     {"role": "assistant", "content": str(bot_text or "").strip()},
                 )
                 logger.info(
@@ -4012,10 +4034,21 @@ class TogetherCompanionPlugin(Star):
                 f"结束前工作上下文：{work_context or '暂无可靠屏幕上下文'}\n"
                 "可见对话：\n" + "\n".join(turns)
             )[:9000]
+        visual_events = [
+            _single_line(item, 1000)
+            for item in room.call_visual_events[-8:]
+            if _single_line(item, 1000)
+        ]
+        visual_section = (
+            "\n通话视觉线索（仅为用户主动开启镜头后形成的文字语义；不含、也不保存原始画面）：\n"
+            + "\n".join(f"- {item}" for item in visual_events)
+            if visual_events
+            else ""
+        )
         return (
             f"活动：{bot_name} 与 {user_name} 实时通话\n"
             f"持续约 {max(1, int((time.time() - room.created_at) / 60))} 分钟\n"
-            "可见转写：\n" + "\n".join(turns)
+            "可见转写：\n" + "\n".join(turns) + visual_section
         )[:9000]
 
     async def _generate_shared_experience_decision(self, material: str) -> str:

@@ -107,6 +107,21 @@ class MemoryProfileTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("之前约好周末一起散步", prompt)
         self.assertEqual(8, bridge.calls[0]["top_k"])
 
+    async def test_call_shared_experience_material_includes_semantic_visual_events(self) -> None:
+        plugin = self._plugin(_MemoryBridge())
+        plugin._bot_name = lambda: "诺星缘"
+        plugin._companion_scene = lambda _user_id: {"relationship": {"name": "比折"}}
+        room = RoomSession("room", "ticket", "call", "995051631", None)
+        room.append_turn("user", "刚才给你看了什么", history_turns=12)
+        room.append_turn("assistant", "看到一瓶椰汁", history_turns=12)
+        room.append_call_visual_event("刚才给你看了什么", "看到一瓶椰汁")
+
+        material = plugin._shared_experience_material(room)
+
+        self.assertIn("通话视觉线索", material)
+        self.assertIn("一瓶椰汁", material)
+        self.assertIn("不保存原始画面", material)
+
 
 if __name__ == "__main__":
     unittest.main()

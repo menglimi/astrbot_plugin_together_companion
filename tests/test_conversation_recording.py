@@ -70,6 +70,24 @@ class ConversationRecordingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("一起房间", manager.created[0][2]["title"])
         self.assertEqual("created-conversation", manager.pairs[0][0])
 
+    async def test_camera_assisted_turn_marks_semantic_visual_context_without_storing_image(self) -> None:
+        manager = _ConversationManager("existing-conversation")
+        plugin = self._plugin(manager)
+        room = RoomSession("room", "ticket", "call", "995051631", None)
+
+        recorded = await plugin._record_astrbot_turns(
+            room,
+            "刚才给你看了什么？",
+            "看到了你手边的一瓶椰汁。",
+            visual_context_used=True,
+        )
+
+        self.assertTrue(recorded)
+        user_record = manager.pairs[0][1]["content"]
+        self.assertIn("视频通话视觉上下文", user_record)
+        self.assertIn("只同步文字语义，不保存画面", user_record)
+        self.assertNotIn("data:image", user_record)
+
     async def test_existing_astrbot_history_is_loaded_into_new_room(self) -> None:
         manager = _ConversationManager(
             "existing-conversation",

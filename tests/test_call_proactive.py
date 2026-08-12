@@ -140,6 +140,16 @@ class CallProactiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("", room.call_camera_frame)
         self.assertEqual(0.0, room.call_camera_updated_at)
 
+    async def test_camera_assisted_semantic_events_are_deduplicated_without_frames(self) -> None:
+        room = RoomSession("room", "ticket", "call", "995051631", None)
+
+        room.append_call_visual_event("我给你看了什么", "看到一瓶椰汁")
+        room.append_call_visual_event("我给你看了什么", "看到一瓶椰汁")
+
+        self.assertEqual(1, len(room.call_visual_events))
+        self.assertIn("一瓶椰汁", room.call_visual_events[0])
+        self.assertNotIn("data:image", room.call_visual_events[0])
+
     async def test_model_can_choose_to_remain_silent(self) -> None:
         plugin = TogetherCompanionPlugin.__new__(TogetherCompanionPlugin)
         plugin.history_turns = 6
