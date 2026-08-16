@@ -155,6 +155,16 @@ class RoomLaunchApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/join/ticket-1?mode=call", result["data"]["url"])
         opener.assert_not_called()
 
+    async def test_mobile_gateway_access_uses_local_room_without_tunnel(self) -> None:
+        plugin = self._plugin()
+
+        result = await plugin._ensure_mobile_room_access(via_mobile_gateway=True)
+
+        self.assertEqual("http://127.0.0.1:6321", result["url"])
+        self.assertTrue(result["mobile_gateway"])
+        self.assertFalse(result["tunnel_started"])
+        plugin.quick_tunnel.start.assert_not_awaited()
+
     async def test_connected_room_can_issue_fresh_invite_ticket(self) -> None:
         plugin = self._plugin()
         plugin.send_room_payload = AsyncMock()

@@ -41,8 +41,9 @@ from .tunnel import CloudflareQuickTunnel
 
 
 PLUGIN_NAME = "astrbot_plugin_together_companion"
-PLUGIN_VERSION = "0.8.2"
+PLUGIN_VERSION = "0.8.3"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
+DEFAULT_TTS_BROWSER_LANGUAGE = "zh-CN"
 _active_plugin: "TogetherCompanionPlugin | None" = None
 
 
@@ -607,8 +608,8 @@ class TogetherCompanionPlugin(Star):
             },
         }
 
-    async def _ensure_mobile_room_access(self) -> dict[str, Any]:
-        """Start the room service and temporary HTTPS access for an explicit user request."""
+    async def _ensure_mobile_room_access(self, *, via_mobile_gateway: bool = False) -> dict[str, Any]:
+        """Prepare room access, using the local gateway proxy when requested."""
         if not self.server_enabled:
             raise RuntimeError("共同房间服务未启用")
         if not self.room_server.running:
@@ -616,6 +617,14 @@ class TogetherCompanionPlugin(Star):
                 await self.room_server.start()
             except Exception as exc:
                 raise RuntimeError(f"共同房间服务启动失败：{_single_line(exc)}") from exc
+        if via_mobile_gateway:
+            return {
+                "url": self.room_server.local_base_url,
+                "tunnel_started": False,
+                "tunnel_ready": True,
+                "fixed_public_url": False,
+                "mobile_gateway": True,
+            }
         if self.public_base_url:
             return {
                 "url": self.public_base_url,
@@ -1943,7 +1952,7 @@ class TogetherCompanionPlugin(Star):
                 "server_available": capabilities["tts"]["available"],
                 "server_label": capabilities["tts"]["label"],
                 "browser_fallback": self.browser_tts_fallback,
-                "browser_language": companion_tts.get("browser_language") or "zh-CN",
+                "browser_language": self._companion_tts_browser_language(companion_tts),
                 "timeout_seconds": int(getattr(self, "tts_timeout_seconds", 60)),
                 "volume_ratio": _clamp_float(
                     getattr(self, "tts_volume_ratio", 1.0),
@@ -2179,6 +2188,24 @@ class TogetherCompanionPlugin(Star):
         except Exception as exc:
             logger.debug("[TogetherCompanion] 读取陪伴 TTS 配置失败: %s", exc)
             return {}
+
+    @staticmethod
+    def _companion_tts_browser_language(config: Any) -> str:
+        if not isinstance(config, dict) or config.get("available") is False:
+            return DEFAULT_TTS_BROWSER_LANGUAGE
+        browser_language = str(config.get("browser_language") or "").strip()
+        if browser_language:
+            return browser_language
+        voice_language = str(config.get("voice_language") or "").strip().lower().replace("_", "-")
+        if voice_language in {"ja", "jp", "japanese"} or voice_language.startswith("ja-"):
+            return "ja-JP"
+        if voice_language in {"zh", "cn", "chinese"} or voice_language.startswith("zh-"):
+            return "zh-CN"
+        if voice_language == "en-gb":
+            return "en-GB"
+        if voice_language in {"en", "eng", "english"} or voice_language.startswith("en-"):
+            return "en-US"
+        return DEFAULT_TTS_BROWSER_LANGUAGE
 
     @staticmethod
     def _direct_voice_language(config: Any) -> tuple[str, str]:
@@ -4917,7 +4944,7 @@ class TogetherCompanionPlugin(Star):
         api = self._private_companion_api()
         bridge = getattr(api, "synthesize_realtime_voice", None) if api is not None else None
         voice_config = self._companion_realtime_voice_config()
-        browser_language = str(voice_config.get("browser_language") or "zh-CN")
+        browser_language = self._companion_tts_browser_language(voice_config)
         timeout_seconds = _clamp_int(getattr(self, "tts_timeout_seconds", 60), 60, 15, 180)
         if provider is None and not callable(bridge):
             await self.send_room_payload(

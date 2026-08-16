@@ -90,6 +90,19 @@ class TogetherTtsBridgeTests(unittest.IsolatedAsyncioTestCase):
         plugin._companion_realtime_voice_config = broken_config
         self.assertEqual("", plugin._call_direct_speech_prompt(room))
 
+    def test_tts_browser_language_follows_companion_with_chinese_default(self) -> None:
+        resolve = TogetherCompanionPlugin._companion_tts_browser_language
+
+        self.assertEqual("ja-JP", resolve({"voice_language": "ja"}))
+        self.assertEqual("ja-JP", resolve({"voice_language": "ja_JP"}))
+        self.assertEqual("zh-CN", resolve({"voice_language": "zh"}))
+        self.assertEqual("en-US", resolve({"voice_language": "en"}))
+        self.assertEqual("en-GB", resolve({"voice_language": "en-GB"}))
+        self.assertEqual("en-GB", resolve({"browser_language": "en-GB"}))
+        self.assertEqual("zh-CN", resolve({"available": False, "voice_language": "ja"}))
+        self.assertEqual("zh-CN", resolve({}))
+        self.assertEqual("zh-CN", resolve(None))
+
     async def test_connected_call_system_prompt_includes_direct_speech_contract(self) -> None:
         plugin = TogetherCompanionPlugin.__new__(TogetherCompanionPlugin)
         plugin.direct_multilingual_tts = True
@@ -567,7 +580,7 @@ class TogetherTtsBridgeTests(unittest.IsolatedAsyncioTestCase):
                 "tts": {"available": True, "label": "tts"},
             }
         )
-        plugin._companion_realtime_voice_config = lambda: {"browser_language": "ja-JP"}
+        plugin._companion_realtime_voice_config = lambda: {"voice_language": "ja"}
         plugin._companion_scene = lambda user_id: {}
         plugin._bot_name = lambda: "Bot"
         plugin.stt_mode = "browser"
