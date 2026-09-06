@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from importlib import resources as importlib_resources
+import hmac
 import json
 import mimetypes
 import re
@@ -24,9 +25,85 @@ except ImportError:  # pragma: no cover - reported clearly during plugin startup
     web = None
 
 
+KEY_PAGE_HTML = """<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
+<title>我会和你在一起 · 房间密钥</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center;
+    font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #f4f5f0; color: #1d221d; }
+  @media (prefers-color-scheme: dark) { body { background: #282c29; color: #ecf0ea; } }
+  form { width: min(88vw, 360px); padding: 32px 28px; border-radius: 18px;
+    background: rgba(127, 127, 127, 0.08); display: grid; gap: 14px; box-sizing: border-box; }
+  h1 { font-size: 18px; margin: 0; }
+  p { margin: 0; font-size: 13px; opacity: 0.72; line-height: 1.6; }
+  p.error { opacity: 1; color: #c0392b; }
+  input { padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(127, 127, 127, 0.4);
+    font-size: 15px; background: transparent; color: inherit; box-sizing: border-box; }
+  input:focus { outline: none; border-color: #4a7856; }
+  button { padding: 12px; border: 0; border-radius: 12px; font-size: 15px;
+    background: #4a7856; color: #fff; cursor: pointer; }
+  button:disabled { opacity: 0.6; cursor: default; }
+</style>
+</head>
+<body>
+<form>
+  <h1>请输入房间访问密钥</h1>
+  <p>这个房间地址需要密钥才能访问，浏览器验证通过后会记住，之后无需重复输入。</p>
+  __HINT__
+  <input id="key" type="password" autocomplete="current-password" placeholder="访问密钥" autofocus />
+  <button id="enter" type="button">进入房间</button>
+</form>
+<script>
+(() => {
+  "use strict";
+  const input = document.getElementById("key");
+  const button = document.getElementById("enter");
+  async function enter() {
+    const value = input.value.trim();
+    if (!value) { input.focus(); return; }
+    button.disabled = true;
+    try {
+      const response = await fetch("/auth?key=" + encodeURIComponent(value));
+      if (response.ok) { window.location.reload(); return; }
+    } catch {
+      showHint("网络异常，请稍后重试。");
+      button.disabled = false;
+      input.focus();
+      return;
+    }
+    showHint("密钥不正确，请重新输入。");
+    button.disabled = false;
+    input.focus();
+  }
+  function showHint(text) {
+    let node = document.querySelector("p.error");
+    if (!node) {
+      node = document.createElement("p");
+      node.className = "error";
+      button.before(node);
+    }
+    node.textContent = text;
+  }
+  button.addEventListener("click", enter);
+  input.addEventListener("keydown", (event) => { if (event.key === "Enter") enter(); });
+})();
+</script>
+</body>
+</html>
+"""
+
+
 class TogetherRoomServer:
     MAX_WEBSOCKET_MESSAGE_BYTES = 16 * 1024 * 1024
     REQUIRED_WEB_ASSETS = ("index.html", "app.css", "app.js", "lucide.min.js")
+    ACCESS_KEY_COOKIE = "together_key"
+    ACCESS_KEY_COOKIE_MAX_AGE = 30 * 86400
 
     def __init__(
         self,
@@ -71,6 +148,49 @@ class TogetherRoomServer:
             host = f"[{host}]"
         return f"http://{host}:{self.port}"
 
+    @property
+    def access_token(self) -> str:
+        """Room access key configured on the plugin; empty means no key gate."""
+        return str(getattr(self.plugin, "access_token", "") or "").strip()
+
+    def _request_access_key(self, request) -> str:
+        key = str(request.query.get("key") or "").strip()
+        if not key:
+            key = str(request.cookies.get(self.ACCESS_KEY_COOKIE) or "").strip()
+        return key
+
+    def _access_allowed(self, request) -> bool:
+        token = self.access_token
+        if not token:
+            return True
+        return hmac.compare_digest(self._request_access_key(request), token)
+
+    def _set_access_cookie(self, response) -> None:
+        response.set_cookie(
+            self.ACCESS_KEY_COOKIE,
+            self.access_token,
+            max_age=self.ACCESS_KEY_COOKIE_MAX_AGE,
+            httponly=True,
+            samesite="Lax",
+            path="/",
+        )
+
+    def _key_page_response(self, *, invalid: bool = False) -> "web.Response":
+        """Self-contained key prompt page; inlined CSS/JS so it works before any asset or cookie access."""
+        hint = "<p class=\"error\">密钥不正确，请重新输入。</p>" if invalid else ""
+        html = KEY_PAGE_HTML.replace("__HINT__", hint)
+        headers = self._security_headers("text/html; charset=utf-8")
+        headers["Content-Security-Policy"] = (
+            "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+            "connect-src 'self'; base-uri 'none'; frame-ancestors 'none'"
+        )
+        return web.Response(
+            body=html,
+            content_type="text/html",
+            charset="utf-8",
+            headers=headers,
+        )
+
     async def start(self) -> None:
         if self.running:
             return
@@ -90,6 +210,7 @@ class TogetherRoomServer:
         app = web.Application(client_max_size=self.MAX_WEBSOCKET_MESSAGE_BYTES)
         app.router.add_get("/", self._serve_index)
         app.router.add_get("/join/{ticket}", self._serve_index)
+        app.router.add_get("/auth", self._serve_auth)
         app.router.add_get("/assets/{name}", self._serve_asset)
         app.router.add_get("/avatar", self._serve_avatar)
         app.router.add_get("/media/{token}/{track}", self._serve_media)
@@ -235,6 +356,16 @@ class TogetherRoomServer:
         return f"资源={name} 文件目录={self.web_root} 包资源={packages}"
 
     async def _serve_index(self, request):
+        if not self._access_allowed(request):
+            provided_key = str(request.query.get("key") or "").strip()
+            return self._key_page_response(invalid=bool(provided_key))
+        response = await self._index_response()
+        provided_key = str(request.query.get("key") or "").strip()
+        if provided_key and hmac.compare_digest(provided_key, self.access_token):
+            self._set_access_cookie(response)
+        return response
+
+    async def _index_response(self):
         path = self._filesystem_web_asset("index.html")
         if path is not None:
             return web.FileResponse(
@@ -253,7 +384,22 @@ class TogetherRoomServer:
             headers=self._security_headers("text/html; charset=utf-8"),
         )
 
+    async def _serve_auth(self, request):
+        """Validate the access key from the key page and remember it via cookie."""
+        provided_key = str(request.query.get("key") or "").strip()
+        token = self.access_token
+        if not token or not provided_key or not hmac.compare_digest(provided_key, token):
+            raise web.HTTPUnauthorized(text="访问密钥不正确")
+        response = web.json_response(
+            {"ok": True},
+            headers=self._security_headers("application/json"),
+        )
+        self._set_access_cookie(response)
+        return response
+
     async def _serve_asset(self, request):
+        if not self._access_allowed(request):
+            raise web.HTTPUnauthorized(text="需要房间访问密钥")
         allowed = set(self.REQUIRED_WEB_ASSETS) - {"index.html"}
         name = str(request.match_info.get("name") or "")
         if name not in allowed:
@@ -277,6 +423,8 @@ class TogetherRoomServer:
         )
 
     async def _serve_avatar(self, request):
+        if not self._access_allowed(request):
+            raise web.HTTPUnauthorized(text="需要房间访问密钥")
         path = await self.plugin.resolve_avatar_path()
         if path is None or not path.is_file():
             raise web.HTTPNotFound()
@@ -406,6 +554,8 @@ class TogetherRoomServer:
     async def _serve_websocket(self, request):
         if not self._origin_allowed(request):
             raise web.HTTPForbidden(text="房间来源校验失败")
+        if not self._access_allowed(request):
+            raise web.HTTPUnauthorized(text="房间访问密钥缺失或不正确")
 
         resume_token = str(request.query.get("resume") or "").strip()
         token = str(request.query.get("ticket") or "").strip()

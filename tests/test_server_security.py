@@ -13,6 +13,61 @@ install_astrbot_stubs()
 from astrbot_plugin_together_companion.server import TogetherRoomServer
 
 
+class RoomAccessKeyTests(unittest.TestCase):
+    @staticmethod
+    def _server(access_token: str = "") -> TogetherRoomServer:
+        server = TogetherRoomServer.__new__(TogetherRoomServer)
+        server.plugin = SimpleNamespace(public_base_url="", access_token=access_token)
+        return server
+
+    @staticmethod
+    def _request(query: dict | None = None, cookies: dict | None = None):
+        return SimpleNamespace(query=query or {}, cookies=cookies or {})
+
+    def test_empty_token_disables_key_gate(self) -> None:
+        request = self._request()
+        self.assertTrue(self._server()._access_allowed(request))
+        self.assertEqual(self._server("   ").access_token, "")
+
+    def test_valid_cookie_key_is_accepted(self) -> None:
+        server = self._server("s3cret-key")
+        request = self._request(cookies={TogetherRoomServer.ACCESS_KEY_COOKIE: "s3cret-key"})
+
+        self.assertTrue(server._access_allowed(request))
+
+    def test_valid_query_key_is_accepted(self) -> None:
+        server = self._server("s3cret-key")
+        request = self._request(query={"key": "s3cret-key"})
+
+        self.assertTrue(server._access_allowed(request))
+
+    def test_wrong_or_missing_key_is_rejected(self) -> None:
+        server = self._server("s3cret-key")
+
+        self.assertFalse(server._access_allowed(self._request()))
+        self.assertFalse(server._access_allowed(self._request(cookies={"other": "s3cret-key"})))
+        self.assertFalse(server._access_allowed(self._request(query={"key": "wrong"})))
+        self.assertFalse(server._access_allowed(self._request(cookies={"together_key": "wrong"})))
+
+    def test_key_page_is_self_contained_and_does_not_leak_the_key(self) -> None:
+        response = self._server("s3cret-key")._key_page_response(invalid=True)
+        body = response.body.decode("utf-8")
+
+        self.assertIn("请输入房间访问密钥", body)
+        self.assertIn("密钥不正确，请重新输入。", body)
+        self.assertNotIn("s3cret-key", body)
+        self.assertNotIn("/assets/", body)
+        self.assertNotIn("app.css", body)
+        self.assertIn("/auth?key=", body)
+        self.assertIn("script-src 'unsafe-inline'", response.headers["Content-Security-Policy"])
+
+    def test_index_accepts_query_key_and_marks_it_invalid(self) -> None:
+        server = self._server("s3cret-key")
+
+        self.assertFalse(server._access_allowed(self._request(query={"key": "wrong"})))
+        self.assertTrue(server._access_allowed(self._request(query={"key": "s3cret-key"})))
+
+
 class RoomOriginTests(unittest.TestCase):
     @staticmethod
     def _server(public_base_url: str = "") -> TogetherRoomServer:

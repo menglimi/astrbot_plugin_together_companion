@@ -94,6 +94,7 @@
           <button type="button" role="tab" aria-selected="true" aria-controls="configVoice" data-config-tab="voice" class="is-active">模型与语音</button>
           <button type="button" role="tab" aria-selected="false" aria-controls="configWatch" data-config-tab="watch">观影节奏</button>
           <button type="button" role="tab" aria-selected="false" aria-controls="configMemory" data-config-tab="memory">记忆与上下文</button>
+          <button type="button" role="tab" aria-selected="false" aria-controls="configAccess" data-config-tab="access">访问安全</button>
         </div>
 
         <div class="config-view is-active" id="configVoice" role="tabpanel" data-config-view="voice">
@@ -173,6 +174,13 @@
           <label class="setting-row toggle-setting"><span>同步到 AstrBot 对话记录</span><input name="conversation.sync_astrbot_conversation" type="checkbox" role="switch" /></label>
           <label class="setting-row toggle-setting"><span>记录有意义的共同经历</span><input name="conversation.record_shared_experiences" type="checkbox" role="switch" /></label>
           <label class="setting-row toggle-setting"><span>记录房间文字转写</span><input name="conversation.record_visible_turns" type="checkbox" role="switch" /></label>
+        </div>
+
+        <div class="config-view" id="configAccess" role="tabpanel" data-config-view="access" hidden>
+          <div class="field-grid">
+            <label class="field"><span>房间访问密钥</span><input name="server.access_token" type="password" maxlength="128" autocomplete="new-password" placeholder="留空表示不启用" /></label>
+          </div>
+          <p class="field-hint">配置公网地址后建议设置：打开房间页面时需先输入密钥，浏览器验证通过后会记住，之后无需重复输入；修改密钥后已打开的房间页需要重新验证。</p>
         </div>
       </form>
     </section>
