@@ -532,6 +532,8 @@ input:focus-visible, select:focus-visible {
 
 .field input:focus, .field select:focus { border-color: color-mix(in srgb, var(--blue) 55%, var(--line)); background: var(--surface); }
 
+.field-hint { margin: 12px 2px 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+
 .setting-row, .range-setting {
   min-height: 58px;
   border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);

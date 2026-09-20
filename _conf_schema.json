@@ -36,6 +36,15 @@
           "enabled": true
         }
       },
+      "access_token": {
+        "description": "房间访问密钥",
+        "type": "string",
+        "default": "",
+        "hint": "留空不启用。设置后打开房间页面或建立连接都需要先输入密钥，浏览器通过 Cookie 记住，之后无需重复输入；配置公网地址后建议启用，防止地址被陌生人直接访问。",
+        "condition": {
+          "enabled": true
+        }
+      },
       "ticket_ttl_minutes": {
         "description": "房间链接有效分钟数",
         "type": "int",

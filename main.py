@@ -273,6 +273,7 @@ class TogetherCompanionPlugin(Star):
         self.server_host = self._cfg_str("server.host", "127.0.0.1") or "127.0.0.1"
         self.server_port = _clamp_int(self._cfg("server.port", 6321), 6321, 1, 65535)
         self.public_base_url = self._cfg_str("server.public_base_url", "").rstrip("/")
+        self.access_token = self._cfg_str("server.access_token", "").strip()
         ticket_minutes = _clamp_int(self._cfg("server.ticket_ttl_minutes", 10), 10, 1, 1440)
         self.ticket_store = RoomTicketStore(ticket_minutes * 60)
 
@@ -889,6 +890,7 @@ class TogetherCompanionPlugin(Star):
 
     def _page_setting_values(self) -> dict[str, Any]:
         defaults = {
+            "server.access_token": "",
             "conversation.chat_provider_id": "",
             "conversation.vision_provider_id": "",
             "conversation.history_turns": 12,
@@ -922,6 +924,7 @@ class TogetherCompanionPlugin(Star):
     def _validate_page_settings(self, values: dict[str, Any]) -> dict[str, Any]:
         updates: dict[str, Any] = {}
         string_limits = {
+            "server.access_token": 128,
             "conversation.chat_provider_id": 160,
             "conversation.vision_provider_id": 160,
             "speech.stt_provider_id": 160,
@@ -984,6 +987,7 @@ class TogetherCompanionPlugin(Star):
         current[parts[-1]] = value
 
     def _sync_page_settings_runtime(self) -> None:
+        self.access_token = self._cfg_str("server.access_token", "").strip()
         self.chat_provider_id = self._cfg_str("conversation.chat_provider_id", "")
         self.vision_provider_id = self._cfg_str("conversation.vision_provider_id", "")
         self.history_turns = _clamp_int(self._cfg("conversation.history_turns", 12), 12, 2, 60)

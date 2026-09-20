@@ -54,6 +54,8 @@ class LauncherTests(unittest.TestCase):
         self.assertIn('"speech.tts_volume_percent": "%"', script)
         self.assertIn('role="switch"', page)
         self.assertIn('requestEndpoint("POST", "config/save"', script)
+        self.assertIn('name="server.access_token"', page)
+        self.assertIn('data-config-tab="access"', page)
         self.assertNotIn('name="server.host"', page)
         self.assertNotIn('name="server.port"', page)
 
